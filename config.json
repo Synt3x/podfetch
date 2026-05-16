@@ -1,0 +1,14 @@
+{
+  "shows": [
+    {
+      "show-url": "https://2.5admins.com/feed/podcast",
+      "download-path": "/podcast/2.5admins",
+      "title-as-filename":1
+    },
+    {
+      "show-url": "https://linuxmatters.sh/episode/index.xml",
+      "download-path": "/podcast/linux matters podcast",
+      "title-as-filename":0
+    }
+  ]
+}
