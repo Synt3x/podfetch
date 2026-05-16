@@ -3,47 +3,59 @@ import os
 import json
 import xml.etree.ElementTree as xmlreader
 
-# Invalid characters in filename
+# Characters not allowed in Windows filenames
 invalidChars = ['<','>',':','"','/','\\','|','?','*']
 
-def getPod(rss, data, bFilename):
+def downloadPodcast(feedUrl, downloadDir, useTitle):
 
-    if os.path.isdir(data) == False:
-        os.makedirs(data)
+    # Create the download directory if it doesn't exist
+    if not os.path.isdir(downloadDir):
+        os.makedirs(downloadDir)
 
-    # get the rss-feed
-    req = requests.get(rss)
+    # Fetch the RSS feed
+    feedResponse = requests.get(feedUrl)
 
-    # rss to xml
-    root = xmlreader.fromstring(req.text)
+    # Parse the RSS feed as XML
+    feedRoot = xmlreader.fromstring(feedResponse.text)
 
-    for item in root.findall('.//channel/item'):
-        title = item.find('title').text
-        enclosure = item.find('enclosure').attrib
+    for episode in feedRoot.findall('.//channel/item'):
+        episodeTitle = episode.find('title').text
+        enclosure = episode.find('enclosure').attrib
 
-        url = enclosure['url']
+        episodeUrl = enclosure['url']
 
-        # Filename from title or url?
-        if bFilename == 0:
-            # Remove everything before last slash and return the data
-            filename = url.rsplit('/',1)[-1]
+        # Build filename from episode title or URL
+        if useTitle == 0:
+            # Strip path from URL, keep only the filename
+            filename = episodeUrl.rsplit('/',1)[-1]
         else:
-            extention = url.rsplit('/',1)[-1].rsplit('.',1)[-1]
-            filename = '{0}.{1}'.format(title,extention)
+            # Use episode title + file extension from URL
+            extension = episodeUrl.rsplit('/',1)[-1].rsplit('.',1)[-1]
+            filename = '{0}.{1}'.format(episodeTitle, extension)
 
-        # Invalid Windows characters
+        # Remove invalid Windows characters from filename
         for char in invalidChars:
             filename = filename.replace(char,'')
 
-        # Fixed annoying mistakes in filename
+        # Collapse any double spaces left behind
         filename = filename.replace('  ',' ')
 
-        if not os.path.isfile(data + '/' + filename):
-            print('Downloading {0} from url {1}'.format(filename, url))
-            req  = requests.get(url, allow_redirects=True)
-            open(data + '/' + filename, 'wb').write(req.content)
-        else:
-            print ('File {0} has already been downloaded'.format(filename))
+        filepath = os.path.join(downloadDir, filename)
 
-for i in json.load(open("config.json","r"))['shows']:
-    getPod(i['show-url'],i['download-path'],i['title-as-filename'])
+        if not os.path.isfile(filepath):
+            print('Downloading {0} from url {1}'.format(filename, episodeUrl))
+            episodeResponse = requests.get(episodeUrl, allow_redirects=True)
+            with open(filepath, 'wb') as f:
+                f.write(episodeResponse.content)
+        else:
+            print('File {0} has already been downloaded'.format(filename))
+
+# Load podcast list from config file
+with open("config.json", "r") as f:
+    config = json.load(f)
+
+for show in config['shows']:
+    try:
+        downloadPodcast(show['show-url'], show['download-path'], show['title-as-filename'])
+    except Exception as e:
+        print('Failed to process {0}: {1}'.format(show['show-url'], e))
