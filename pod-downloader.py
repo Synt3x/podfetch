@@ -45,5 +45,5 @@ def getPod(rss, data, bFilename):
         else:
             print ('File {0} has already been downloaded'.format(filename))
 
-for i in json.load(open("download.json","r"))['shows']:
+for i in json.load(open("config.json","r"))['shows']:
     getPod(i['show-url'],i['download-path'],i['title-as-filename'])
