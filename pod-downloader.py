@@ -57,6 +57,9 @@ maxSpeed = 0
 skipInactiveDays = 0
 dryRun = False
 
+# The config.json in use, so a finished inactive show can be disabled in it
+configPath = os.path.join(scriptDir, 'config.json')
+
 # Running count of what happened, for the summary and notifications at the end
 totals = {'downloaded': 0, 'failed': 0, 'skipped': 0, 'failedShows': 0}
 downloadedNames = []
@@ -283,6 +286,49 @@ def isInactive(episodes, days, now=None):
         return False
     return (now if now is not None else time.time()) - max(releaseTimes) > days * 24 * 60 * 60
 
+def disableShowInConfig(show):
+    # Set "enabled": 0 on this show in config.json, changing only that value so the rest of the file stays
+    # as you wrote it. The result is read back and saved only if exactly that one value changed.
+    # Returns True once saved
+    try:
+        with open(configPath, 'r', encoding='utf-8') as f:
+            text = f.read()
+        before = json.loads(text)
+
+        # The show's { ... } block is the one holding its feed URL; show blocks have no { } inside them
+        quotedUrl = json.dumps(show['url'], ensure_ascii=False)
+        position = text.find(quotedUrl)
+        if position < 0 or text.find(quotedUrl, position + 1) >= 0:
+            return False
+        start = text.rfind('{', 0, position)
+        end = text.find('}', position)
+        if start < 0 or end < 0 or '}' in text[start:position]:
+            return False
+        block = text[start:end + 1]
+        if re.search(r'"enabled"\s*:\s*1\b', block):
+            newBlock = re.sub(r'("enabled"\s*:\s*)1\b', r'\g<1>0', block, count=1)
+        elif '"enabled"' not in block:
+            newBlock = block[:-1].rstrip() + ', "enabled": 0 }'
+        else:
+            return False
+        newText = text[:start] + newBlock + text[end + 1:]
+
+        # Check that the only change is this show's "enabled" before saving
+        after = json.loads(newText)
+        expected = json.loads(text)
+        matches = [entry for entry in expected['shows'] if entry.get('url', entry.get('show-url')) == show['url']]
+        if len(matches) != 1:
+            return False
+        matches[0]['enabled'] = 0
+        if after != expected or after == before:
+            return False
+
+        with open(configPath, 'w', encoding='utf-8', newline='') as f:
+            f.write(newText)
+        return True
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
 def planPodcast(show, redownload, checkInactive=True):
     # Work out which of a show's episodes need downloading. Returns them in download order;
     # a dry run lists them and returns nothing, since nothing will be downloaded
@@ -293,18 +339,29 @@ def planPodcast(show, redownload, checkInactive=True):
         showTitles[showName(show)] = feedTitle
     allEpisodes = buildEpisodes(feedRoot, downloadDir, show['title-as-filename'])
 
-    # "skip-inactive-days": skip shows with no new episode in that many days, unless picked with --show
+    episodes = selectEpisodes(allEpisodes, show.get('skip-episodes', []), show.get('max-episodes', 0))
+
+    # "skip-inactive-days": skip shows with no new episode in that many days, unless picked with --show.
+    # Only once every episode is downloaded, though: a show that ended still gets the ones you're missing
     if checkInactive and isInactive(allEpisodes, skipInactiveDays):
-        newest = max(episode['releaseTime'] for episode in allEpisodes if episode['releaseTime'])
-        log('Skipping {0}: no new episode in {1} days (newest is from {2})'.format(
-            showName(show), skipInactiveDays, time.strftime('%Y-%m-%d', time.localtime(newest))))
-        return []
+        newest = time.strftime('%Y-%m-%d', time.localtime(max(episode['releaseTime'] for episode in allEpisodes if episode['releaseTime'])))
+        missing = sum(1 for episode in episodes if not os.path.isfile(os.path.join(downloadDir, episode['filename'])))
+        if not missing and not redownload:
+            # Nothing left to get, so turn the show off in config.json; later runs don't read its feed again
+            reason = 'all {0} episodes downloaded and no new episode in {1} days (newest is from {2})'.format(len(episodes), skipInactiveDays, newest)
+            if dryRun:
+                log('Would disable {0}: {1}'.format(displayName(showName(show)), reason))
+            elif disableShowInConfig(show):
+                log('Disabling {0}: {1}. Set "enabled": 1 in config.json to check it again'.format(displayName(showName(show)), reason))
+            else:
+                log('Skipping {0}: {1}. Could not set "enabled": 0 in config.json, so it will be checked again next run'.format(displayName(showName(show)), reason))
+            return []
+        log('{0} has had no new episode in {1} days (newest is from {2}), but {3} episode{4} still missing'.format(
+            displayName(showName(show)), skipInactiveDays, newest, missing, ' is' if missing == 1 else 's are'))
 
     # Create the download directory if it doesn't exist; a dry run changes nothing
     if not dryRun and not os.path.isdir(downloadDir):
         os.makedirs(downloadDir)
-
-    episodes = selectEpisodes(allEpisodes, show.get('skip-episodes', []), show.get('max-episodes', 0))
 
     # The list is oldest first; flip it back unless downloading in release order
     if not oldestFirst:
@@ -647,7 +704,7 @@ def parseArguments(arguments):
     return parser.parse_args(arguments)
 
 def main(arguments=None):
-    global dryRun, logFile
+    global dryRun, logFile, configPath
 
     # When output goes to a file or scheduled task, Windows may not be able to show characters like ✔ or
     # some in episode titles; replace those instead of stopping with an error
@@ -655,7 +712,8 @@ def main(arguments=None):
         sys.stdout.reconfigure(errors='replace')
 
     options = parseArguments(sys.argv[1:] if arguments is None else arguments)
-    config = loadConfig(options.config)
+    configPath = options.config
+    config = loadConfig(configPath)
     applySettings(config)
     dryRun = options.dry_run
 

@@ -460,13 +460,81 @@ class RunTests(PodfetchTestCase):
         self.run_main(self.config(**{'skip-episodes': ['Ep 1: Older']}))
         self.assertEqual(os.listdir(self.downloadDir), ['Ep 2 Newer.mp3'])
 
-    def test_inactive_show_skipped_unless_picked(self):
+    def writeConfigText(self, text):
+        path = os.path.join(self.tempDir, 'config.json')
+        with open(path, 'w', encoding='utf-8', newline='') as f:
+            f.write(text)
+        return path
+
+    def run_text(self, text, *arguments):
+        # Run main() with config.json written exactly as given, and return its output
+        path = self.writeConfigText(text)
+        output = io.StringIO()
+        with mock.patch.object(podfetch.requests, 'get', side_effect=self.fakeGet), redirect_stdout(output):
+            podfetch.main(['--config', path, *arguments])
+        return output.getvalue()
+
+    def inactiveConfigText(self, enabled=', "enabled": 1'):
+        # Hand-written layout, to check that disabling a show leaves the rest of the file as it was
+        return ('{\n'
+                '  "skip-inactive-days": 90,\n'
+                '  "temp-path": ' + json.dumps(os.path.join(self.tempDir, 'parts')) + ',\n'
+                '  "shows": [\n'
+                '    {"url": "https://x/feed", "download-path": ' + json.dumps(self.downloadDir) + ', "title-as-filename": 1' + enabled + '},\n'
+                '    {"url": "https://x/other", "download-path": "unused", "title-as-filename": 1, "enabled": 0}\n'
+                '  ]\n'
+                '}\n')
+
+    def test_inactive_show_with_missing_episodes_still_downloads_them(self):
         self.feed = makeFeed([('Old', 'https://x/old.mp3', 'Thu, 01 Jan 2026 12:00:00 +0000')])
-        config = {**self.config(), 'skip-inactive-days': 90}
-        self.run_main(config)
-        self.assertFalse(os.path.exists(self.downloadDir))
-        self.run_main(config, '--show', 'episodes')
+        text = self.inactiveConfigText()
+        output = self.run_text(text)
         self.assertEqual(os.listdir(self.downloadDir), ['Old.mp3'])
+        self.assertIn('but 1 episode is still missing', output)
+        with open(os.path.join(self.tempDir, 'config.json'), encoding='utf-8') as f:
+            self.assertEqual(f.read(), text, 'not disabled while an episode was missing')
+
+    def test_complete_inactive_show_is_disabled_in_config(self):
+        self.feed = makeFeed([('Old', 'https://x/old.mp3', 'Thu, 01 Jan 2026 12:00:00 +0000')])
+        os.makedirs(self.downloadDir)
+        open(os.path.join(self.downloadDir, 'Old.mp3'), 'wb').close()
+        text = self.inactiveConfigText()
+        output = self.run_text(text)
+        self.assertIn('Disabling Test: all 1 episodes downloaded', output)
+        with open(os.path.join(self.tempDir, 'config.json'), encoding='utf-8') as f:
+            disabledText = f.read()
+        self.assertEqual(disabledText, text.replace('"title-as-filename": 1, "enabled": 1}', '"title-as-filename": 1, "enabled": 0}'),
+                         'only that show\'s "enabled" changed; the rest of the file is untouched')
+        self.assertIn('Skipping episodes: disabled in config', self.run_text(disabledText))
+
+    def test_disabling_adds_enabled_when_missing(self):
+        self.feed = makeFeed([('Old', 'https://x/old.mp3', 'Thu, 01 Jan 2026 12:00:00 +0000')])
+        os.makedirs(self.downloadDir)
+        open(os.path.join(self.downloadDir, 'Old.mp3'), 'wb').close()
+        self.run_text(self.inactiveConfigText(enabled=''))
+        with open(os.path.join(self.tempDir, 'config.json'), encoding='utf-8') as f:
+            config = json.load(f)
+        self.assertEqual(config['shows'][0]['enabled'], 0)
+        self.assertEqual(config['shows'][1], {'url': 'https://x/other', 'download-path': 'unused', 'title-as-filename': 1, 'enabled': 0})
+
+    def test_dry_run_only_says_it_would_disable(self):
+        self.feed = makeFeed([('Old', 'https://x/old.mp3', 'Thu, 01 Jan 2026 12:00:00 +0000')])
+        os.makedirs(self.downloadDir)
+        open(os.path.join(self.downloadDir, 'Old.mp3'), 'wb').close()
+        text = self.inactiveConfigText()
+        self.assertIn('Would disable Test', self.run_text(text, '--dry-run'))
+        with open(os.path.join(self.tempDir, 'config.json'), encoding='utf-8') as f:
+            self.assertEqual(f.read(), text)
+
+    def test_inactive_show_picked_with_show_runs_normally(self):
+        self.feed = makeFeed([('Old', 'https://x/old.mp3', 'Thu, 01 Jan 2026 12:00:00 +0000')])
+        os.makedirs(self.downloadDir)
+        open(os.path.join(self.downloadDir, 'Old.mp3'), 'wb').close()
+        text = self.inactiveConfigText()
+        output = self.run_text(text, '--show', 'episodes')
+        self.assertNotIn('Disabling', output)
+        with open(os.path.join(self.tempDir, 'config.json'), encoding='utf-8') as f:
+            self.assertEqual(f.read(), text)
 
     def test_random_show_downloads_every_show(self):
         otherDir = os.path.join(self.tempDir, 'other')

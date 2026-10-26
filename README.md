@@ -83,7 +83,7 @@ Episodes are saved in `podcast-folder` + each show's `folder`, so the example ab
 | `oldest-first` | integer | `1` = download each show in release order instead of newest first. Default `0` |
 | `random-show` | integer | `1` = read every feed first, then take each next download from a random show, so one site doesn't get all the requests in a row. Each show's episodes keep their order. Default `0` = finish one show before starting the next |
 | `max-speed` | integer | Download speed limit in KB/s, for example `5000` for about 5 MB/s. Default `0` = no limit |
-| `skip-inactive-days` | integer | Skip a show whose newest episode is older than this many days, as it has probably ended. `90` is about three months. `--show` still runs it. Default `0` = never skip |
+| `skip-inactive-days` | integer | Disable a show whose newest episode is older than this many days, as it has probably ended. `90` is about three months. The script first checks that you have every episode: if any are missing it downloads them, and only once the show is complete does it set `"enabled": 0` on it in `config.json`, so later runs don't check it again. Set it back to `1` to re-enable the show. `--show` still runs it, and `--dry-run` only says what it would disable. Default `0` = never disable |
 | `log-file` | string | Also write every message, with the time, to this file. A relative path is next to the script. Empty or missing = no log file |
 | `notify` | list | Where to send a message after a run. See [Notifications](#notifications) |
 | `notify-when` | string | `changes` = when anything downloaded or failed, `failures` = only when something failed, `always` = after every run. Default `changes` |
