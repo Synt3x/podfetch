@@ -20,7 +20,18 @@ requestTimeout = 60
 # Folder this script lives in, so config.json is found wherever it's run from
 scriptDir = os.path.dirname(os.path.abspath(__file__))
 
-def downloadPodcast(feedUrl, downloadDir, useTitle, redownload):
+def printProgress(done, total):
+    # Redraw the bar on the same line; without a known size, show MB downloaded only
+    doneMb = done / (1024 * 1024)
+    if total:
+        width = 30
+        filled = width * done // total
+        bar = '#' * filled + '-' * (width - filled)
+        print('\r  [{0}] {1:3d}%  {2:.1f} / {3:.1f} MB'.format(bar, 100 * done // total, doneMb, total / (1024 * 1024)), end='', flush=True)
+    else:
+        print('\r  {0:.1f} MB'.format(doneMb), end='', flush=True)
+
+def downloadPodcast(feedUrl, downloadDir, useTitle, redownload, showProgress):
 
     # Create the download directory if it doesn't exist
     if not os.path.isdir(downloadDir):
@@ -79,9 +90,16 @@ def downloadPodcast(feedUrl, downloadDir, useTitle, redownload):
                     if not episodeResponse.ok:
                         print('Failed to download {0}: HTTP {1}'.format(filename, episodeResponse.status_code))
                         continue
+                    total = int(episodeResponse.headers.get('Content-Length') or 0)
+                    done = 0
                     with open(partialPath, 'wb') as f:
                         for chunk in episodeResponse.iter_content(chunk_size=1024 * 1024):
                             f.write(chunk)
+                            done += len(chunk)
+                            if showProgress:
+                                printProgress(done, total)
+                    if showProgress:
+                        print()
                 shutil.move(partialPath, filepath)
             except requests.RequestException as e:
                 # A timeout or dropped connection skips this episode; the next run retries it
@@ -96,9 +114,12 @@ with open(os.path.join(scriptDir, 'config.json'), 'r') as f:
 # --redownload on the command line downloads every episode of every show again
 redownloadAll = '--redownload' in sys.argv[1:]
 
+# "show-progressbar": 1 in config.json shows a download bar for each episode
+showProgress = config.get('show-progressbar', 0) == 1
+
 for show in config['shows']:
     try:
         redownload = redownloadAll or show.get('redownload', 0) == 1
-        downloadPodcast(show['show-url'], show['download-path'], show['title-as-filename'], redownload)
+        downloadPodcast(show['show-url'], show['download-path'], show['title-as-filename'], redownload, showProgress)
     except Exception as e:
         print('Failed to process {0}: {1}'.format(show['show-url'], e))

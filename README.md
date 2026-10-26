@@ -16,6 +16,7 @@ Copy `config.json.example` to `config.json` and edit it to list the shows you wa
 
 ```json
 {
+  "show-progressbar": 1,
   "shows": [
     {
       "show-url": "https://example.com/feed/podcast",
@@ -29,6 +30,7 @@ Copy `config.json.example` to `config.json` and edit it to list the shows you wa
 ### Configuration Options
 | Field | Type | Description |
 |---|---|---|
+| `show-progressbar` | integer | Optional, top level (applies to all shows). `1` = show a download bar for each episode. Default `0` |
 | `show-url` | string | URL of the podcast RSS feed |
 | `download-path` | string | Local directory where episodes will be saved |
 | `title-as-filename` | integer | `1` = use episode title as filename, `0` = use original filename from URL |
