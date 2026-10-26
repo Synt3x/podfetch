@@ -5,14 +5,20 @@
   "temp-path": "",
   "retries": 3,
   "oldest-first": 0,
+  "random-show": 0,
+  "max-speed": 0,
+  "skip-inactive-days": 0,
   "log-file": "",
+  "notify": [],
+  "notify-when": "changes",
   "shows": [
     {
       "show-url": "https://2.5admins.com/feed/podcast/",
       "download-path": "/podcast/2.5admins",
       "title-as-filename": 1,
       "enabled": 1,
-      "max-episodes": 0
+      "max-episodes": 0,
+      "skip-episodes": []
     }
   ]
 }
