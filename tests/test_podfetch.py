@@ -312,19 +312,21 @@ class NotifyTests(PodfetchTestCase):
         self.assertEqual(podfetch.notifyPayload('discord', 'hi'), {'content': 'hi', 'username': 'podfetch'})
         self.assertEqual(podfetch.notifyPayload('voidy', 'hi'), {'content': 'hi', 'username': 'podfetch'})
 
-    def test_message_lists_episodes_and_failures(self):
-        podfetch.totals.update(downloaded=1, failed=1)
-        podfetch.downloadedNames.append(('2.5admins', '2.5 Admins 323 Something.mp3', 51275366))
+    def test_message_sums_up_each_show(self):
+        podfetch.showTitles.update({'2.5admins': '2.5 Admins'})
+        podfetch.totals.update(downloaded=3, failed=1)
+        podfetch.downloadedNames.extend(('2.5admins', 'ep{0}.mp3'.format(n), 51275366) for n in range(2))
+        podfetch.downloadedNames.append(('late night linux', 'LNL 409.mp3', 3 * 1024 ** 2))
         podfetch.failedNames.append(('coder raido', '660 Broken.mp3'))
         message = podfetch.buildNotifyMessage(2000)
-        self.assertEqual(message, 'podfetch: 1 new episode (48.9 MB), 1 failed\n'
-                                  '• 2.5admins: 2.5 Admins 323 Something (48.9 MB)\n'
-                                  'Failed:\n'
-                                  '• coder raido: 660 Broken')
+        self.assertEqual(message, 'podfetch: 3 new episodes (100.8 MB), 1 failed\n'
+                                  '• 2.5 Admins: 2 episodes (97.8 MB)\n'
+                                  '• late night linux: 1 episode (3.0 MB)\n'
+                                  '• coder raido: 0 episodes, 1 failed')
 
     def test_message_cut_to_the_limit(self):
         podfetch.totals['downloaded'] = 500
-        podfetch.downloadedNames.extend(('show', 'Episode {0} with a fairly long title.mp3'.format(n), 40 * 1024 ** 2) for n in range(500))
+        podfetch.downloadedNames.extend(('Show number {0} with a fairly long name'.format(n), 'ep.mp3', 40 * 1024 ** 2) for n in range(500))
         message = podfetch.buildNotifyMessage(2000)
         self.assertLessEqual(len(message), 2000)
         self.assertRegex(message, r'\.\.\. and \d+ more$')

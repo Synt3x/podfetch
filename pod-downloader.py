@@ -669,6 +669,17 @@ def overviewLines(shows, plans):
             for show, planned in zip(shows, plans) if planned]
     return [paint('⇣ {0} episode{1} to download'.format(total, '' if total == 1 else 's'), 'bold')] + treeLines(rows)
 
+def showTotals():
+    # [downloaded, bytes, failed] for each show that got anything, in the order the shows came up
+    shows = {}
+    for show, filename, size in downloadedNames:
+        counts = shows.setdefault(show, [0, 0, 0])
+        counts[0] += 1
+        counts[1] += size
+    for show, filename in failedNames:
+        shows.setdefault(show, [0, 0, 0])[2] += 1
+    return shows
+
 def summaryLines():
     # The end-of-run summary: the totals, then a line per show that got anything, in the order they came up:
     #   ✔ 10 of 10 downloaded · 30.0 MB
@@ -689,15 +700,8 @@ def summaryLines():
             heading = '{0} Nothing new'.format(mark)
         if totals['failed']:
             heading += ' · {0} failed'.format(totals['failed'])
-        shows = {}
-        for show, filename, size in downloadedNames:
-            counts = shows.setdefault(show, [0, 0, 0])
-            counts[0] += 1
-            counts[1] += size
-        for show, filename in failedNames:
-            shows.setdefault(show, [0, 0, 0])[2] += 1
         rows = [(displayName(show), '{0} ep'.format(downloaded), formatSize(size), paint('✖ {0} failed'.format(failed), 'red') if failed else '')
-                for show, (downloaded, size, failed) in shows.items()]
+                for show, (downloaded, size, failed) in showTotals().items()]
     if totals['failedShows']:
         heading += ' · {0} show{1} could not be read'.format(totals['failedShows'], '' if totals['failedShows'] == 1 else 's')
     return [heading] + treeLines(rows)
@@ -712,11 +716,15 @@ def buildNotifyMessage(limit):
     if totals['failedShows']:
         heading += ', {0} show(s) could not be read'.format(totals['failedShows'])
 
+    # One line per show, not per episode
     lines = [heading]
-    lines += ['• {0}: {1} ({2})'.format(displayName(show), filename.rsplit('.',1)[0], formatSize(size)) for show, filename, size in downloadedNames]
-    if failedNames:
-        lines.append('Failed:')
-        lines += ['• {0}: {1}'.format(displayName(show), filename.rsplit('.',1)[0]) for show, filename in failedNames]
+    for show, (downloaded, size, failed) in showTotals().items():
+        line = '• {0}: {1} episode{2}'.format(displayName(show), downloaded, '' if downloaded == 1 else 's')
+        if downloaded:
+            line += ' ({0})'.format(formatSize(size))
+        if failed:
+            line += ', {0} failed'.format(failed)
+        lines.append(line)
 
     # Add lines until the next one wouldn't fit, then say how many were left out
     message = lines[0]

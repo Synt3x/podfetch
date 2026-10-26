@@ -119,13 +119,15 @@ Episodes are saved in `podcast-folder` + each show's `folder`, so the example ab
 | `redownload` | integer | Optional. `1` = download every episode of this show again on each run, overwriting existing files. Default `0` |
 
 ## Notifications
-After a run, the script can post a short report to Discord, Slack or Voidy: how many episodes downloaded and their total size, each episode's title and size, and anything that failed. For example:
+After a run, the script can post a short report to Discord, Slack or Voidy: how many episodes downloaded and their total size, then one line per show with its episode count, size and any failures. For example:
 
 ```
-podfetch: 2 new episodes (97.3 MB)
-• 2.5admins: 2.5 Admins 323 Something (48.9 MB)
-• late night linux: Late Night Linux – Episode 409 (48.4 MB)
-``` Add one entry to `notify` for each place to post:
+podfetch: 10 new episodes (125.4 MB), 1 failed
+• 2.5 Admins: 9 episodes (77.0 MB)
+• Late Night Linux: 1 episode (48.4 MB), 1 failed
+```
+
+Add one entry to `notify` for each place to post:
 
 ```json
 "notify": [
