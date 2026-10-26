@@ -512,6 +512,7 @@ class NameFormatTests(PodfetchTestCase):
             (('Episode 1: Too Much Choice | LU1', ['LINUX Unplugged']), ('001', 'Too Much Choice')),
             (('Episode 2: Edge of Failure | LINUX Unplugged 2', ['LINUX Unplugged']), ('002', 'Edge of Failure')),
             (('Episode 7: Part | Two 3', ['LINUX Unplugged']), ('007', 'Part | Two 3')),
+            (('The Dev Jungle | CR 57', ['Coder Radio']), ('057', 'The Dev Jungle')),
             (('Self-Hosted Coming Soon', ['Self-Hosted']), ('', 'Coming Soon')),
             (('5 Ways to Back Up', ['Show']), ('', '5 Ways to Back Up')),
             (('2.5 Adminsitis', ['2.5 Admins']), ('', '2.5 Adminsitis')),

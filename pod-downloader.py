@@ -171,10 +171,16 @@ def splitTitle(title, prefixes, episodeTag, seasonTag):
         text = text[match.end():]
     if (episodeTag or '').strip().isdigit():
         number = episodeTag.strip()
-    # Drop an ending like "| LUP 240" or "| LINUX Unplugged 8", which only repeats the episode number
+    # Drop an ending like "| LUP 240" or "| LINUX Unplugged 8", which only repeats the episode number.
+    # Without a number elsewhere, a short code like "| CR 57" gives it
     ending = re.search(r'\s*\|[^|]*?(\d+)$', text)
     if ending and number is not None and int(ending.group(1)) == int(number):
         text = text[:ending.start()]
+    elif number is None:
+        ending = re.search(r'\s*\|\s*[A-Za-z][A-Za-z ]{0,20}?\s*(\d+)$', text)
+        if ending:
+            number = ending.group(1)
+            text = text[:ending.start()]
     text = text.strip(separators)
 
     if (seasonTag or '').strip().isdigit():
