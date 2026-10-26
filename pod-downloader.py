@@ -3,6 +3,7 @@ import os
 import re
 import json
 import shutil
+import sys
 import tempfile
 import xml.etree.ElementTree as xmlreader
 from urllib.parse import urlparse
@@ -19,7 +20,7 @@ requestTimeout = 60
 # Folder this script lives in, so config.json is found wherever it's run from
 scriptDir = os.path.dirname(os.path.abspath(__file__))
 
-def downloadPodcast(feedUrl, downloadDir, useTitle):
+def downloadPodcast(feedUrl, downloadDir, useTitle, redownload):
 
     # Create the download directory if it doesn't exist
     if not os.path.isdir(downloadDir):
@@ -64,7 +65,8 @@ def downloadPodcast(feedUrl, downloadDir, useTitle):
 
         filepath = os.path.join(downloadDir, filename)
 
-        if not os.path.isfile(filepath):
+        # Download if missing, or again if redownload is on (overwrites the existing file)
+        if redownload or not os.path.isfile(filepath):
             print('Downloading {0} from url {1}'.format(filename, episodeUrl))
             # Save to a .part file first, then move it into place once complete
             os.makedirs(partialDir, exist_ok=True)
@@ -91,8 +93,12 @@ def downloadPodcast(feedUrl, downloadDir, useTitle):
 with open(os.path.join(scriptDir, 'config.json'), 'r') as f:
     config = json.load(f)
 
+# --redownload on the command line downloads every episode of every show again
+redownloadAll = '--redownload' in sys.argv[1:]
+
 for show in config['shows']:
     try:
-        downloadPodcast(show['show-url'], show['download-path'], show['title-as-filename'])
+        redownload = redownloadAll or show.get('redownload', 0) == 1
+        downloadPodcast(show['show-url'], show['download-path'], show['title-as-filename'], redownload)
     except Exception as e:
         print('Failed to process {0}: {1}'.format(show['show-url'], e))
