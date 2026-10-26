@@ -1,10 +1,15 @@
 import requests
 import os
 import json
+import shutil
+import tempfile
 import xml.etree.ElementTree as xmlreader
 
 # Characters not allowed in Windows filenames
 invalidChars = ['<','>',':','"','/','\\','|','?','*']
+
+# Unfinished downloads go here, outside the project, so they are safe to delete
+partialDir = os.path.join(tempfile.gettempdir(), 'podfetch')
 
 def downloadPodcast(feedUrl, downloadDir, useTitle):
 
@@ -44,9 +49,16 @@ def downloadPodcast(feedUrl, downloadDir, useTitle):
 
         if not os.path.isfile(filepath):
             print('Downloading {0} from url {1}'.format(filename, episodeUrl))
-            episodeResponse = requests.get(episodeUrl, allow_redirects=True)
-            with open(filepath, 'wb') as f:
-                f.write(episodeResponse.content)
+            # Save to a .part file first, then move it into place once complete
+            os.makedirs(partialDir, exist_ok=True)
+            partialPath = os.path.join(partialDir, filename + '.part')
+
+            # Stream to disk in chunks instead of holding the whole episode in memory
+            with requests.get(episodeUrl, allow_redirects=True, stream=True) as episodeResponse:
+                with open(partialPath, 'wb') as f:
+                    for chunk in episodeResponse.iter_content(chunk_size=1024 * 1024):
+                        f.write(chunk)
+            shutil.move(partialPath, filepath)
         else:
             print('File {0} has already been downloaded'.format(filename))
 
