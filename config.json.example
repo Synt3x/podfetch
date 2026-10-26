@@ -1,10 +1,16 @@
 {
   "show-progressbar": 1,
+  "hide-skipped": 1,
+  "timeout": 60,
+  "temp-path": "",
+  "retries": 3,
+  "oldest-first": 0,
   "shows": [
     {
       "show-url": "https://2.5admins.com/feed/podcast/",
       "download-path": "/podcast/2.5admins",
-      "title-as-filename": 1
+      "title-as-filename": 1,
+      "enabled": 1
     }
   ]
 }

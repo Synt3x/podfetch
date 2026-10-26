@@ -5,20 +5,18 @@ import json
 import shutil
 import sys
 import tempfile
+import time
 import xml.etree.ElementTree as xmlreader
 from urllib.parse import urlparse
 
 # Characters not allowed in Windows filenames
 invalidChars = ['<','>',':','"','/','\\','|','?','*']
 
-# Unfinished downloads go here, outside the project, so they are safe to delete
-partialDir = os.path.join(tempfile.gettempdir(), 'podfetch')
-
-# Seconds to wait for the server to connect or send data before giving up
-requestTimeout = 60
-
 # Folder this script lives in, so config.json is found wherever it's run from
 scriptDir = os.path.dirname(os.path.abspath(__file__))
+
+# Seconds to wait between retries of a failed download
+retryDelay = 5
 
 def printProgress(done, total):
     # Redraw the bar on the same line; without a known size, show MB downloaded only
@@ -31,7 +29,45 @@ def printProgress(done, total):
     else:
         print('\r  {0:.1f} MB'.format(doneMb), end='', flush=True)
 
-def downloadPodcast(feedUrl, downloadDir, useTitle, redownload, showProgress):
+def downloadEpisode(episodeUrl, filename, filepath):
+    # Save to a .part file first, then move it into place once complete
+    os.makedirs(partialDir, exist_ok=True)
+    partialPath = os.path.join(partialDir, filename + '.part')
+
+    # Try once, then up to maxRetries more times on timeouts, dropped connections and server errors
+    for attempt in range(maxRetries + 1):
+        if attempt > 0:
+            print('  Retrying ({0}/{1}) in {2}s'.format(attempt, maxRetries, retryDelay))
+            time.sleep(retryDelay)
+        try:
+            # Stream to disk in chunks instead of holding the whole episode in memory
+            with requests.get(episodeUrl, allow_redirects=True, stream=True, timeout=requestTimeout) as episodeResponse:
+                # Skip this episode on an error status, so an error page isn't saved as audio
+                if not episodeResponse.ok:
+                    print('Failed to download {0}: HTTP {1}'.format(filename, episodeResponse.status_code))
+                    # Only server errors (5xx) are worth retrying; a 404 won't fix itself
+                    if episodeResponse.status_code >= 500:
+                        continue
+                    return
+                total = int(episodeResponse.headers.get('Content-Length') or 0)
+                done = 0
+                with open(partialPath, 'wb') as f:
+                    for chunk in episodeResponse.iter_content(chunk_size=1024 * 1024):
+                        f.write(chunk)
+                        done += len(chunk)
+                        if showProgress:
+                            printProgress(done, total)
+                if showProgress:
+                    print()
+            shutil.move(partialPath, filepath)
+            return
+        except requests.RequestException as e:
+            if showProgress:
+                print()
+            print('Failed to download {0}: {1}'.format(filename, e))
+    # Out of retries; the next run tries this episode again
+
+def downloadPodcast(feedUrl, downloadDir, useTitle, redownload):
 
     # Create the download directory if it doesn't exist
     if not os.path.isdir(downloadDir):
@@ -44,7 +80,13 @@ def downloadPodcast(feedUrl, downloadDir, useTitle, redownload, showProgress):
     # Parse the RSS feed as XML
     feedRoot = xmlreader.fromstring(feedResponse.text)
 
-    for episode in feedRoot.findall('.//channel/item'):
+    episodes = feedRoot.findall('.//channel/item')
+
+    # Feeds list the newest episode first; reverse to download in release order
+    if oldestFirst:
+        episodes.reverse()
+
+    for episode in episodes:
         episodeTitle = episode.findtext('title')
         enclosure = episode.find('enclosure')
 
@@ -79,32 +121,8 @@ def downloadPodcast(feedUrl, downloadDir, useTitle, redownload, showProgress):
         # Download if missing, or again if redownload is on (overwrites the existing file)
         if redownload or not os.path.isfile(filepath):
             print('Downloading {0} from url {1}'.format(filename, episodeUrl))
-            # Save to a .part file first, then move it into place once complete
-            os.makedirs(partialDir, exist_ok=True)
-            partialPath = os.path.join(partialDir, filename + '.part')
-
-            try:
-                # Stream to disk in chunks instead of holding the whole episode in memory
-                with requests.get(episodeUrl, allow_redirects=True, stream=True, timeout=requestTimeout) as episodeResponse:
-                    # Skip this episode on an error status, so an error page isn't saved as audio
-                    if not episodeResponse.ok:
-                        print('Failed to download {0}: HTTP {1}'.format(filename, episodeResponse.status_code))
-                        continue
-                    total = int(episodeResponse.headers.get('Content-Length') or 0)
-                    done = 0
-                    with open(partialPath, 'wb') as f:
-                        for chunk in episodeResponse.iter_content(chunk_size=1024 * 1024):
-                            f.write(chunk)
-                            done += len(chunk)
-                            if showProgress:
-                                printProgress(done, total)
-                    if showProgress:
-                        print()
-                shutil.move(partialPath, filepath)
-            except requests.RequestException as e:
-                # A timeout or dropped connection skips this episode; the next run retries it
-                print('Failed to download {0}: {1}'.format(filename, e))
-        else:
+            downloadEpisode(episodeUrl, filename, filepath)
+        elif not hideSkipped:
             print('File {0} has already been downloaded'.format(filename))
 
 # Load podcast list from config file
@@ -114,12 +132,27 @@ with open(os.path.join(scriptDir, 'config.json'), 'r') as f:
 # --redownload on the command line downloads every episode of every show again
 redownloadAll = '--redownload' in sys.argv[1:]
 
-# "show-progressbar": 1 in config.json shows a download bar for each episode
+# Settings for all shows; anything missing from config.json falls back to the default
+# "show-progressbar": 1 shows a download bar for each episode
 showProgress = config.get('show-progressbar', 0) == 1
+# "hide-skipped": 1 hides the line for each episode that's already downloaded
+hideSkipped = config.get('hide-skipped', 0) == 1
+# "timeout": seconds to wait for the server to connect or send data before giving up
+requestTimeout = config.get('timeout', 60)
+# "temp-path": where unfinished .part downloads go; outside the project so they are safe to delete
+partialDir = config.get('temp-path') or os.path.join(tempfile.gettempdir(), 'podfetch')
+# "retries": how many more times to try a failed download before moving on
+maxRetries = config.get('retries', 0)
+# "oldest-first": 1 downloads in release order instead of newest first
+oldestFirst = config.get('oldest-first', 0) == 1
 
 for show in config['shows']:
+    # "enabled": 0 pauses a show without removing it from the config
+    if show.get('enabled', 1) == 0:
+        print('Skipping {0}: disabled in config'.format(show['show-url']))
+        continue
     try:
         redownload = redownloadAll or show.get('redownload', 0) == 1
-        downloadPodcast(show['show-url'], show['download-path'], show['title-as-filename'], redownload, showProgress)
+        downloadPodcast(show['show-url'], show['download-path'], show['title-as-filename'], redownload)
     except Exception as e:
         print('Failed to process {0}: {1}'.format(show['show-url'], e))
