@@ -16,7 +16,7 @@ A Python script that downloads podcast episodes from RSS feeds into one folder p
    python pod-downloader.py
    ```
 
-It reads every feed first and shows what it's about to download, by show, then downloads, counting as it goes so you can see how many are done and how many are left:
+It reads every feed first, with a line like `◌ Reading feeds 3/10 · linux unplugged` so you can see how far it's got, and shows what it's about to download, by show, then downloads, counting as it goes so you can see how many are done and how many are left:
 
 ```
 ⇣ 512 episodes to download

@@ -220,6 +220,20 @@ class ProgressTests(PodfetchTestCase):
         self.assertEqual(text, '\r' + bar + '\r' + ' ' * len(bar) + '\r' + 'Downloading B\n' + '\r' + bar + '\r' + ' ' * len(bar) + '\r')
         self.assertEqual(podfetch.activeDownloads, {})
 
+    def test_status_replaced_by_the_next_message(self):
+        output = io.StringIO()
+        output.isatty = lambda: True
+        with redirect_stdout(output), mock.patch.object(podfetch.shutil, 'get_terminal_size', return_value=os.terminal_size((80, 24))):
+            podfetch.showStatus('Reading feeds 1/2')
+            podfetch.log('Failed')
+        self.assertEqual(output.getvalue(), 'Reading feeds 1/2' + '\r' + ' ' * 17 + '\r' + 'Failed\n')
+
+    def test_no_status_outside_a_terminal(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            podfetch.showStatus('Reading feeds 1/2')
+        self.assertEqual(output.getvalue(), '')
+
     def test_progress_off_prints_nothing_extra(self):
         output = io.StringIO()
         with redirect_stdout(output):

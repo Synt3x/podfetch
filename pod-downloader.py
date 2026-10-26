@@ -200,6 +200,19 @@ def drawProgress():
     progressLength = len(line)
     lastProgressDraw = time.monotonic()
 
+def showStatus(text):
+    # Say what's happening on a line that's replaced by the next status or message, like which feed is
+    # being read. Only in a terminal, so the log and scheduled output stay clean
+    global progressLength
+    if not sys.stdout.isatty():
+        return
+    with logLock:
+        clearProgress()
+        line = text[:shutil.get_terminal_size((100, 24)).columns - 1]
+        sys.stdout.write(line)
+        sys.stdout.flush()
+        progressLength = len(line)
+
 def updateProgress(key, name, done, total, force=False):
     # Note how far a download has got, and redraw the progress line at most 5 times a second
     if not showProgress:
@@ -937,15 +950,19 @@ def main(arguments=None):
             log(paint('Disabled: ' + ', '.join(disabled), 'dim'))
 
     if options.check:
-        for show in shows:
+        for number, show in enumerate(shows, 1):
+            showStatus(paint('◌ Checking {0}/{1} · {2}'.format(number, len(shows), showName(show)), 'dim'))
             try:
                 checkShow(show)
             except Exception as e:
                 log('Failed to check {0}: {1}'.format(showName(show), e))
+        with logLock:
+            clearProgress()
         return 0
 
-    def plan(show):
+    def plan(number, show):
         # A show's download list, or nothing when its feed can't be read
+        showStatus(paint('◌ Reading feeds {0}/{1} · {2}'.format(number, len(shows), showName(show)), 'dim'))
         try:
             # --redownload on the command line downloads every episode of every show again
             redownload = options.redownload or show.get('redownload', 0) == 1
@@ -958,7 +975,9 @@ def main(arguments=None):
     # Read every feed first, so the total is known and each download can show how many are left.
     # "random-show": 1 mixes the shows' downloads in random order; otherwise each show is finished
     # before the next one starts
-    plans = [plan(show) for show in shows]
+    plans = [plan(number, show) for number, show in enumerate(shows, 1)]
+    with logLock:
+        clearProgress()
     if config.get('random-show', 0) == 1:
         jobs = list(mixedOrder(plans))
     else:
