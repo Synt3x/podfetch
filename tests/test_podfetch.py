@@ -646,6 +646,14 @@ class RunTests(PodfetchTestCase):
         self.assertEqual(self.episodeFiles(), ['Ep 0 Oldest.mp3', 'Ep 1 Older.mp3', 'Ep 2 Newer.mp3'])
         self.assertEqual(podfetch.totals['downloaded'], 3, 'the episode in both feeds downloads once')
 
+    def test_feed_from_a_file(self):
+        with open(os.path.join(self.tempDir, 'old.xml'), 'wb') as f:
+            f.write(makeFeed([('Ep 0: Oldest', 'https://x/0.mp3', 'Wed, 31 Dec 2025 12:00:00 +0000')]))
+        config = self.config()
+        config['shows'][0]['url'] = ['https://x/feed', 'old.xml']
+        self.run_main(config)
+        self.assertEqual(self.episodeFiles(), ['Ep 0 Oldest.mp3', 'Ep 1 Older.mp3', 'Ep 2 Newer.mp3'])
+
     def test_url_list_checked(self):
         with self.assertRaises(SystemExit) as stop:
             self.run_main(self.config(url=[]))

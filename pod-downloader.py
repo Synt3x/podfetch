@@ -469,6 +469,10 @@ def getReleaseTime(pubDate):
 def fetchFeed(feedUrl):
     # Fetch the RSS feed
     debugLog('Reading feed {0}'.format(feedUrl))
+    # A feed can also be a file, like one you've put together yourself; a relative path is next to config.json
+    if not re.match(r'https?://', feedUrl, re.I):
+        with open(os.path.join(os.path.dirname(os.path.abspath(configPath)), feedUrl), 'rb') as f:
+            return xmlreader.fromstring(f.read())
     feedResponse = requests.get(feedUrl, timeout=requestTimeout)
     feedResponse.raise_for_status()
 
