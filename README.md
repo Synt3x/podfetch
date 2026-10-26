@@ -106,6 +106,7 @@ Episodes are saved in `podcast-folder` + each show's `folder`, so the example ab
 | `notify` | list | Where to send a message after a run. See [Notifications](#notifications) |
 | `notify-when` | string | `changes` = when anything downloaded or failed, `failures` = only when something failed, `always` = after every run. Default `changes` |
 | `podcast-folder` | string | The folder all shows go in. Each show is saved in its `folder` inside it. The older name `download-path` still works here |
+| `skip-deleted` | integer | `1` = don't download an episode again after you've deleted it. podfetch knows from `.podfetch.json` that it was downloaded before. Default `0` = download it again |
 | `filename-format` | string | How episodes are named, for example `{show} - {date} - {episode} - {title}`. See [Filenames](#filenames). Empty or missing = the episode title as it is, or the URL's filename with `title-as-filename`: `0` |
 
 ### Settings for each show

@@ -64,6 +64,7 @@ debug = False
 parallel = 1
 dryRun = False
 nameFormat = ''
+skipDeleted = False
 
 # With "parallel" above 1, several downloads update the counts and write messages at once
 countLock = threading.Lock()
@@ -666,6 +667,12 @@ def planPodcast(show, redownload, checkInactive=True):
         olderNames = [state.get(episode['guid'], {}).get('file'), episode['legacyFilename']]
         source = next((name for name in olderNames if name and name != episode['filename'] and os.path.isfile(os.path.join(downloadDir, name))), None)
         if source is None:
+            # "skip-deleted": 1 leaves out episodes that were downloaded before and have since been deleted
+            if skipDeleted and episode['guid'] in state:
+                totals['skipped'] += 1
+                if not hideSkipped:
+                    log('Skipping {0}: deleted after it was downloaded'.format(state[episode['guid']].get('file', episode['filename'])))
+                continue
             needed.append(episode)
             continue
         showLabel = paint(displayName(showName(show)), 'cyan')
@@ -1005,7 +1012,7 @@ settingTypes = {
     'show-progressbar': int, 'hide-skipped': int, 'timeout': int, 'temp-path': str,
     'retries': int, 'oldest-first': int, 'log-file': str, 'max-speed': int,
     'skip-inactive-days': int, 'random-show': int, 'debug': int, 'parallel': int, 'notify': list, 'notify-when': str,
-    'podcast-folder': str, 'filename-format': str, 'shows': list,
+    'podcast-folder': str, 'filename-format': str, 'skip-deleted': int, 'shows': list,
 }
 showSettingTypes = {
     'url': str, 'folder': str, 'name': str, 'filename-format': str, 'title-as-filename': int,
@@ -1087,7 +1094,7 @@ def loadConfig(configPath):
 
 def applySettings(config):
     # Set the settings for all shows from config.json; anything missing falls back to the default
-    global showProgress, hideSkipped, requestTimeout, partialDir, maxRetries, oldestFirst, logFile, maxSpeed, skipInactiveDays, debug, parallel, nameFormat
+    global showProgress, hideSkipped, requestTimeout, partialDir, maxRetries, oldestFirst, logFile, maxSpeed, skipInactiveDays, debug, parallel, nameFormat, skipDeleted
     # "show-progressbar": 1 shows a download bar for each episode. It's left off when output goes
     # to a file or a scheduled task instead of a terminal, where the redrawn bar would garble the output
     showProgress = config.get('show-progressbar', 0) == 1 and sys.stdout.isatty()
@@ -1116,6 +1123,8 @@ def applySettings(config):
     # "filename-format": how episodes are named, like "{show} - {date} - {episode} - {title}".
     # Empty means the episode title, or the URL's filename with "title-as-filename": 0
     nameFormat = config.get('filename-format', '')
+    # "skip-deleted": 1 doesn't download an episode again after you've deleted it
+    skipDeleted = config.get('skip-deleted', 0) == 1
 
 def pickShows(shows, names):
     # The shows --show asks for, matched by folder name, or by part of the folder name or feed URL

@@ -620,6 +620,16 @@ class RunTests(PodfetchTestCase):
         self.run_main(self.config())
         self.assertEqual(podfetch.loadState(self.downloadDir)['https://x/2.mp3']['file'], 'Ep 2 Newer.mp3')
 
+    def test_skip_deleted(self):
+        self.run_main(self.config())
+        os.remove(os.path.join(self.downloadDir, 'Ep 1 Older.mp3'))
+        config = self.config()
+        config['skip-deleted'] = 1
+        self.run_main(config)
+        self.assertEqual(self.episodeFiles(), ['Ep 2 Newer.mp3'], 'a deleted episode stays deleted')
+        self.run_main(self.config())
+        self.assertEqual(self.episodeFiles(), ['Ep 1 Older.mp3', 'Ep 2 Newer.mp3'], 'without it, a deleted episode comes back')
+
     def test_dry_run_renames_nothing(self):
         os.makedirs(self.downloadDir)
         open(os.path.join(self.downloadDir, 'Ep 1 Older.mp3'), 'wb').close()

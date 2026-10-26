@@ -15,6 +15,7 @@
   "notify-when": "changes",
   "podcast-folder": "/podcast",
   "filename-format": "{show} - {date} - {episode} - {title}",
+  "skip-deleted": 0,
   "shows": [
     {
       "url": "https://2.5admins.com/feed/podcast/",
