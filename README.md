@@ -82,14 +82,14 @@ Episodes are saved in `podcast-folder` + each show's `folder`, so the example ab
 ### Settings for all shows
 | Field | Type | Description |
 |---|---|---|
-| `show-progressbar` | integer | `1` = show download progress on the last line of the terminal, with a `✔` line as each episode finishes. It stays off when output goes to a file or scheduled task rather than a terminal. Default `0` |
+| `show-progressbar` | integer | `1` = show a download bar for each episode, with a `✔` line as each one finishes. It's off when `parallel` is above `1`, and when output goes to a file or scheduled task rather than a terminal. Default `0` |
 | `hide-skipped` | integer | `1` = don't print a line for each episode that's already downloaded. Default `0` |
 | `timeout` | integer | Seconds to wait for a server to connect or send data before giving up. Default `60` |
 | `temp-path` | string | Folder for unfinished `.part` downloads. Anything left there is safe to delete. Empty or missing = `podfetch` folder in the OS temp directory |
 | `retries` | integer | How many more times to try a download that timed out, dropped or got a server error (5xx), waiting 5 seconds between tries. Default `0` |
 | `oldest-first` | integer | `1` = download each show in release order instead of newest first. Default `0` |
 | `random-show` | integer | `1` = read every feed first, then take each next download from a random show, so one site doesn't get all the requests in a row. Each show's episodes keep their order. Default `0` = finish one show before starting the next |
-| `parallel` | integer | How many episodes download at the same time. `2` or `3` is faster while staying gentle on the sites; more mostly hits the same few servers harder. With the progress bar on, all downloads in progress share one line, like `⬇ 2.5 Admins 323 Something 45% 22/49 MB │ 691 Some Title 12% 7/58 MB`. Default `1` |
+| `parallel` | integer | How many episodes download at the same time. `2` or `3` is faster while staying gentle on the sites; more mostly hits the same few servers harder. Above `1` there's no progress bar; a `✔` line shows as each episode finishes instead, and a warning at the start says so if `show-progressbar` is on. Default `1` |
 | `max-speed` | integer | Download speed limit in KB/s for each download, for example `5000` for about 5 MB/s. With `parallel`, the total can be that many times higher. Default `0` = no limit |
 | `skip-inactive-days` | integer | Disable a show whose newest episode is older than this many days, as it has probably ended. `90` is about three months. The script first checks that you have every episode: if any are missing it downloads them, and only once the show is complete does it set `"enabled": 0` on it in `config.json`, so later runs don't check it again. Set it back to `1` to re-enable the show. `--show` still runs it, and `--dry-run` only says what it would disable. Default `0` = never disable |
 | `debug` | integer | `1` = show extra details: each feed URL as it's read, where each episode is downloaded from and saved to, and how each notification was answered. Notification URLs are never shown, as they can hold secrets. Default `0` |

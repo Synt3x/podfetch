@@ -69,8 +69,8 @@ logLock = threading.Lock()
 # Set on Ctrl+C, so downloads in progress stop straight away
 stopEvent = threading.Event()
 
-# Downloads in progress for the progress line, as (name, bytes done, total bytes) in the order they started;
-# how many characters of progress line are on screen, so it can be cleared; and when it was last drawn
+# The download in progress for the progress bar, as (name, bytes done, total bytes); how many characters
+# of progress bar are on screen, so it can be cleared; and when it was last drawn
 activeDownloads = {}
 progressLength = 0
 lastProgressDraw = 0.0
@@ -139,33 +139,15 @@ def debugLog(message):
     if debug:
         log('  [debug] ' + message)
 
-def renderProgress(downloads, width):
-    # The progress line for the downloads in progress, each a (name, bytes done, total bytes) tuple,
-    # cut to fit width. One download gets a bar; several share the line:
-    #   ⬇ 2.5 Admins 323 Something 45% 22/49 MB │ 691 Some Title 12% 7/58 MB
+def renderProgress(done, total, width):
+    # The progress bar for the episode downloading, cut to fit width; without a known size, MB downloaded only
     megabyte = 1024 * 1024
-    if len(downloads) == 1:
-        name, done, total = downloads[0]
-        if total:
-            filled = 30 * done // total
-            line = '  [{0}] {1:3d}%  {2:.1f} / {3:.1f} MB'.format('#' * filled + '-' * (30 - filled), 100 * done // total, done / megabyte, total / megabyte)
-        else:
-            line = '  {0:.1f} MB'.format(done / megabyte)
-        return line[:width]
-
-    stats = ['{0}% {1:.0f}/{2:.0f} MB'.format(100 * done // total, done / megabyte, total / megabyte) if total else '{0:.0f} MB'.format(done / megabyte)
-             for name, done, total in downloads]
-    prefix, separator = '⬇ ', ' │ '
-    # Share what's left after the numbers between the names, shortening long ones with …
-    room = width - len(prefix) - len(separator) * (len(downloads) - 1) - sum(len(stat) + 1 for stat in stats)
-    nameWidth = max(8, room // len(downloads))
-    parts = []
-    for (name, done, total), stat in zip(downloads, stats):
-        if len(name) > nameWidth:
-            name = name[:nameWidth - 1].rstrip() + '…'
-        parts.append('{0} {1}'.format(name, stat))
-    line = prefix + separator.join(parts)
-    return line if len(line) <= width else line[:width - 1] + '…'
+    if total:
+        filled = 30 * done // total
+        line = '  [{0}] {1:3d}%  {2:.1f} / {3:.1f} MB'.format('#' * filled + '-' * (30 - filled), 100 * done // total, done / megabyte, total / megabyte)
+    else:
+        line = '  {0:.1f} MB'.format(done / megabyte)
+    return line[:width]
 
 def clearProgress():
     # Remove the progress line from the screen. Called with logLock held
@@ -175,11 +157,12 @@ def clearProgress():
         progressLength = 0
 
 def drawProgress():
-    # Draw the progress line for the downloads in progress, over the old one. Called with logLock held
+    # Draw the progress bar for the episode downloading, over the old one. Called with logLock held
     global progressLength, lastProgressDraw
     if not showProgress or not activeDownloads:
         return
-    line = renderProgress(list(activeDownloads.values()), shutil.get_terminal_size((100, 24)).columns - 1)
+    name, done, total = list(activeDownloads.values())[-1]
+    line = renderProgress(done, total, shutil.get_terminal_size((100, 24)).columns - 1)
     sys.stdout.write('\r' + line + ' ' * max(0, progressLength - len(line)))
     sys.stdout.flush()
     progressLength = len(line)
@@ -824,8 +807,10 @@ def applySettings(config):
     skipInactiveDays = config.get('skip-inactive-days', 0)
     # "debug": 1 shows extra details, like the feed URLs and where each episode is downloaded from
     debug = config.get('debug', 0) == 1
-    # "parallel": how many episodes download at the same time; the progress line then shows them all
+    # "parallel": how many episodes download at the same time. Above 1 there's no progress bar
     parallel = config.get('parallel', 1)
+    if parallel > 1:
+        showProgress = False
 
 def pickShows(shows, names):
     # The shows --show asks for, matched by folder name, or by part of the folder name or feed URL
@@ -866,6 +851,11 @@ def main(arguments=None):
     config = loadConfig(configPath)
     applySettings(config)
     dryRun = options.dry_run
+
+    # The progress bar and parallel downloads don't mix; say so first thing, so it's not a surprise
+    if config.get('show-progressbar', 0) == 1 and parallel > 1:
+        log('Warning: no progress bar while "parallel" is {0}. Set "parallel": 1 to see it, or "show-progressbar": 0 to hide this warning'.format(parallel))
+
     if options.debug:
         global debug
         debug = True

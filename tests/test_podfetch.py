@@ -196,27 +196,15 @@ class InactiveTests(unittest.TestCase):
 class ProgressTests(PodfetchTestCase):
     megabyte = 1024 * 1024
 
-    def test_one_download_gets_a_bar(self):
-        self.assertEqual(podfetch.renderProgress([('Ep', 22 * self.megabyte, 44 * self.megabyte)], 100),
+    def test_bar(self):
+        self.assertEqual(podfetch.renderProgress(22 * self.megabyte, 44 * self.megabyte, 100),
                          '  [###############---------------]  50%  22.0 / 44.0 MB')
 
     def test_unknown_size(self):
-        self.assertEqual(podfetch.renderProgress([('Ep', 5 * self.megabyte, 0)], 100), '  5.0 MB')
+        self.assertEqual(podfetch.renderProgress(5 * self.megabyte, 0, 100), '  5.0 MB')
 
-    def test_several_downloads_share_one_line(self):
-        line = podfetch.renderProgress([('2.5 Admins 323 Something', 22 * self.megabyte, 49 * self.megabyte),
-                                        ('691 Some Title', 7 * self.megabyte, 58 * self.megabyte)], 120)
-        self.assertEqual(line, '⬇ 2.5 Admins 323 Something 44% 22/49 MB │ 691 Some Title 12% 7/58 MB')
-
-    def test_long_names_shortened_to_fit(self):
-        downloads = [('A very long episode title that goes on and on ' * 2, self.megabyte, 10 * self.megabyte),
-                     ('Another long episode title that also goes on ' * 2, self.megabyte, 0)]
-        for width in (40, 60, 80):
-            line = podfetch.renderProgress(downloads, width)
-            self.assertLessEqual(len(line), width)
-            self.assertIn('…', line)
-            if width >= 60:
-                self.assertIn('10% 1/10 MB', line, 'names are shortened before the numbers')
+    def test_bar_cut_to_fit(self):
+        self.assertEqual(len(podfetch.renderProgress(self.megabyte, 2 * self.megabyte, 20)), 20)
 
     def test_messages_print_above_the_progress_line(self):
         podfetch.showProgress = True
@@ -553,11 +541,19 @@ class RunTests(PodfetchTestCase):
         finally:
             podfetch.stopEvent.clear()
 
-    def test_parallel_keeps_the_progress_bar(self):
+    def test_parallel_turns_off_the_progress_bar(self):
         with mock.patch.object(podfetch.sys.stdout, 'isatty', return_value=True):
-            podfetch.applySettings({'show-progressbar': 1, 'parallel': 2})
+            podfetch.applySettings({'show-progressbar': 1})
             self.assertTrue(podfetch.showProgress)
+            podfetch.applySettings({'show-progressbar': 1, 'parallel': 2})
+            self.assertFalse(podfetch.showProgress)
         podfetch.applySettings({})
+
+    def test_warning_first_when_progress_bar_and_parallel_are_both_on(self):
+        output = self.run_text(json.dumps({**self.config(), 'show-progressbar': 1, 'parallel': 2}))
+        self.assertTrue(output.splitlines()[0].startswith('Warning: no progress bar while "parallel" is 2'))
+        self.assertNotIn('Warning', self.run_text(json.dumps({**self.config(), 'show-progressbar': 1})))
+        self.assertNotIn('Warning', self.run_text(json.dumps({**self.config(), 'parallel': 2})))
 
     def test_debug_shows_where_episodes_come_from(self):
         output = self.run_text(json.dumps({**self.config(), 'debug': 1}))
