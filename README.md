@@ -77,7 +77,7 @@ Options can be combined, for example `python pod-downloader.py --show 2.5admins 
 }
 ```
 
-Episodes are saved in `podcast-folder` + each show's `folder`, so the example above saves 2.5 Admins episodes in `/podcast/2.5admins`. Only `shows`, and in each show `url`, `folder` and `title-as-filename`, are required. Anything else that's missing uses its default. A misspelled setting name gets a warning, and other mistakes in the file get a message saying what to fix.
+Episodes are saved in `podcast-folder` + each show's `folder`, so the example above saves 2.5 Admins episodes in `/podcast/2.5admins`. Only `podcast-folder` and `shows`, and in each show `url`, `folder` and `title-as-filename`, are required. Anything else that's missing uses its default. A misspelled setting name gets a warning, and other mistakes in the file get a message saying what to fix.
 
 ### Settings for all shows
 | Field | Type | Description |
@@ -102,8 +102,7 @@ Episodes are saved in `podcast-folder` + each show's `folder`, so the example ab
 | Field | Type | Description |
 |---|---|---|
 | `url` | string | URL of the podcast RSS feed. The older name `show-url` still works |
-| `folder` | string | The show's folder inside `podcast-folder`. It's also the show's name in messages and for `--show` |
-| `download-path` | string | Optional. A full folder path for this show only, used instead of `podcast-folder` + `folder`, for example to keep one show on another drive |
+| `folder` | string | The show's folder inside `podcast-folder`. It's also how `--show` finds the show |
 | `title-as-filename` | integer | `1` = name files after the episode title, `0` = use the original filename from the URL |
 | `enabled` | integer | Optional. `0` = skip this show without removing it from the config. Default `1` |
 | `max-episodes` | integer | Optional. Only download the newest this many episodes. Default `0` = all |
@@ -148,7 +147,7 @@ When two episodes share a title, later ones are numbered, like `Bonus (2).mp3`. 
 - **Possible duplicates**: a second copy of an episode next to the correctly named one.
 - **Not in the feed**: files the feed doesn't list, such as episodes the show removed.
 
-It also says how many episodes are missing. Nothing is changed.
+It also says how many episodes are missing. Nothing is changed, and the script never deletes episodes: many feeds only list recent episodes, so a file missing from the feed is usually still one you want.
 
 ## Running it on a schedule
 The script exits with code `1` when any download or feed failed, and `0` otherwise, so Task Scheduler or cron can tell whether a run worked. With `log-file` set, you can see later what each run did.

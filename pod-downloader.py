@@ -660,10 +660,10 @@ settingTypes = {
     'podcast-folder': str, 'shows': list,
 }
 showSettingTypes = {
-    'url': str, 'folder': str, 'download-path': str, 'title-as-filename': int,
+    'url': str, 'folder': str, 'title-as-filename': int,
     'enabled': int, 'redownload': int, 'max-episodes': int, 'skip-episodes': list,
 }
-requiredShowSettings = ['url', 'title-as-filename']
+requiredShowSettings = ['url', 'folder', 'title-as-filename']
 notifyWhenChoices = ['changes', 'failures', 'always']
 
 def checkSettings(settings, types, where, problems):
@@ -720,13 +720,12 @@ def loadConfig(configPath):
                 problems.append('"{0}" is missing {1}'.format(key, where))
         checkSettings(show, showSettingTypes, where, problems)
 
-        # A show's folder is its own "download-path", or its "folder" inside the top-level "podcast-folder"
-        if 'download-path' not in show:
-            if 'folder' not in show:
-                problems.append('"folder" is missing {0}'.format(where))
-            elif not isinstance(config.get('podcast-folder'), str) or not config['podcast-folder']:
+        # A show's episodes go in its "folder" inside the top-level "podcast-folder". The full path is kept
+        # in the show as "download-path"; one written in config.json is ignored (warned about above)
+        if 'folder' in show and isinstance(show['folder'], str):
+            if not isinstance(config.get('podcast-folder'), str) or not config['podcast-folder']:
                 problems.append('"folder" {0} needs "podcast-folder" at the top of config.json, the folder all shows go in'.format(where))
-            elif isinstance(show['folder'], str):
+            else:
                 show['download-path'] = os.path.join(config['podcast-folder'], show['folder'])
         if isinstance(show.get('skip-episodes'), list) and not all(isinstance(entry, str) for entry in show['skip-episodes']):
             problems.append('"skip-episodes" {0} should be a list of episode titles or filenames'.format(where))

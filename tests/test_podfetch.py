@@ -340,21 +340,24 @@ class ConfigTests(PodfetchTestCase):
 
     def test_bad_notify_and_skip_episodes(self):
         error = self.configError({'notify': [{'type': 'teams', 'url': 'x'}], 'notify-when': 'sometimes',
-                                  'shows': [{'url': 'x', 'download-path': 'y', 'title-as-filename': 1, 'skip-episodes': [1]}]})
+                                  'podcast-folder': 'Z:/', 'shows': [{'url': 'x', 'folder': 'y', 'title-as-filename': 1, 'skip-episodes': [1]}]})
         self.assertIn('notify entry 1 needs a "type"', error)
         self.assertIn('"parallel" must be at least 1', self.configError({'parallel': 0, 'shows': []}))
         self.assertIn('"notify-when" should be one of', error)
         self.assertIn('"skip-episodes" in show 1', error)
 
     def test_folder_joins_the_top_level_download_path(self):
-        config = self.quietly(podfetch.loadConfig, self.writeConfig({
-            'podcast-folder': 'Z:/', 'shows': [
-                {'url': 'https://x/a', 'folder': '2.5admins', 'title-as-filename': 1},
-                {'url': 'https://x/b', 'folder': 'ignored', 'download-path': 'D:/elsewhere', 'title-as-filename': 1},
-            ]}))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            config = podfetch.loadConfig(self.writeConfig({
+                'podcast-folder': 'Z:/', 'shows': [
+                    {'url': 'https://x/a', 'folder': '2.5admins', 'title-as-filename': 1},
+                    {'url': 'https://x/b', 'folder': 'other', 'download-path': 'D:/elsewhere', 'title-as-filename': 1},
+                ]}))
         self.assertEqual(config['shows'][0]['download-path'], os.path.join('Z:/', '2.5admins'))
         self.assertEqual(podfetch.showName(config['shows'][0]), '2.5admins')
-        self.assertEqual(config['shows'][1]['download-path'], 'D:/elsewhere', "a show's own download-path wins")
+        self.assertEqual(config['shows'][1]['download-path'], os.path.join('Z:/', 'other'), "a show's own download-path is ignored")
+        self.assertIn('unknown setting "download-path" in show 2 is ignored', output.getvalue())
 
     def test_folder_needs_a_download_path(self):
         error = self.configError({'shows': [{'url': 'x', 'folder': 'a', 'title-as-filename': 1},
@@ -373,8 +376,8 @@ class ConfigTests(PodfetchTestCase):
     def test_old_show_url_name_still_works(self):
         output = io.StringIO()
         with redirect_stdout(output):
-            config = podfetch.loadConfig(self.writeConfig({'shows': [
-                {'show-url': 'https://x/feed', 'download-path': 'y', 'title-as-filename': 1}]}))
+            config = podfetch.loadConfig(self.writeConfig({'podcast-folder': 'Z:/', 'shows': [
+                {'show-url': 'https://x/feed', 'folder': 'y', 'title-as-filename': 1}]}))
         self.assertEqual(config['shows'][0]['url'], 'https://x/feed')
         self.assertNotIn('unknown setting', output.getvalue())
 
@@ -430,7 +433,8 @@ class RunTests(PodfetchTestCase):
 
     def config(self, **show):
         return {'temp-path': os.path.join(self.tempDir, 'parts'),
-                'shows': [{'url': 'https://x/feed', 'download-path': self.downloadDir, 'title-as-filename': 1, **show}]}
+                'podcast-folder': self.tempDir,
+                'shows': [{'url': 'https://x/feed', 'folder': 'episodes', 'title-as-filename': 1, **show}]}
 
     def test_download_names_and_dates_files(self):
         self.assertEqual(self.run_main(self.config()), 0)
@@ -476,9 +480,9 @@ class RunTests(PodfetchTestCase):
                 return FakeResponse(feeds[url])
             time.sleep(0.05)
             return FakeResponse(b'ID3 audio for ' + url.encode() + b' ' * 300000)
-        config = {'temp-path': os.path.join(self.tempDir, 'parts'), 'parallel': 2, 'shows': [
-            {'url': 'https://x/a', 'download-path': self.downloadDir, 'title-as-filename': 1},
-            {'url': 'https://x/b', 'download-path': otherDir, 'title-as-filename': 1}]}
+        config = {'temp-path': os.path.join(self.tempDir, 'parts'), 'parallel': 2, 'podcast-folder': self.tempDir, 'shows': [
+            {'url': 'https://x/a', 'folder': 'episodes', 'title-as-filename': 1},
+            {'url': 'https://x/b', 'folder': 'other', 'title-as-filename': 1}]}
         path = self.writeConfigText(json.dumps(config))
         with mock.patch.object(podfetch.requests, 'get', side_effect=get):
             self.assertEqual(self.quietly(podfetch.main, ['--config', path]), 0)
@@ -548,9 +552,10 @@ class RunTests(PodfetchTestCase):
         return ('{\n'
                 '  "skip-inactive-days": 90,\n'
                 '  "temp-path": ' + json.dumps(os.path.join(self.tempDir, 'parts')) + ',\n'
+                '  "podcast-folder": ' + json.dumps(self.tempDir) + ',\n'
                 '  "shows": [\n'
-                '    {"url": "https://x/feed", "download-path": ' + json.dumps(self.downloadDir) + ', "title-as-filename": 1' + enabled + '},\n'
-                '    {"url": "https://x/other", "download-path": "unused", "title-as-filename": 1, "enabled": 0}\n'
+                '    {"url": "https://x/feed", "folder": "episodes", "title-as-filename": 1' + enabled + '},\n'
+                '    {"url": "https://x/other", "folder": "unused", "title-as-filename": 1, "enabled": 0}\n'
                 '  ]\n'
                 '}\n')
 
@@ -584,7 +589,7 @@ class RunTests(PodfetchTestCase):
         with open(os.path.join(self.tempDir, 'config.json'), encoding='utf-8') as f:
             config = json.load(f)
         self.assertEqual(config['shows'][0]['enabled'], 0)
-        self.assertEqual(config['shows'][1], {'url': 'https://x/other', 'download-path': 'unused', 'title-as-filename': 1, 'enabled': 0})
+        self.assertEqual(config['shows'][1], {'url': 'https://x/other', 'folder': 'unused', 'title-as-filename': 1, 'enabled': 0})
 
     def test_dry_run_only_says_it_would_disable(self):
         self.feed = makeFeed([('Old', 'https://x/old.mp3', 'Thu, 01 Jan 2026 12:00:00 +0000')])
@@ -609,7 +614,7 @@ class RunTests(PodfetchTestCase):
         otherDir = os.path.join(self.tempDir, 'other')
         config = self.config()
         config['random-show'] = 1
-        config['shows'].append({'url': 'https://x/feed', 'download-path': otherDir, 'title-as-filename': 1})
+        config['shows'].append({'url': 'https://x/feed', 'folder': 'other', 'title-as-filename': 1})
         self.assertEqual(self.run_main(config), 0)
         self.assertEqual(sorted(os.listdir(self.downloadDir)), ['Ep 1 Older.mp3', 'Ep 2 Newer.mp3'])
         self.assertEqual(sorted(os.listdir(otherDir)), ['Ep 1 Older.mp3', 'Ep 2 Newer.mp3'])
@@ -631,7 +636,8 @@ class RunTests(PodfetchTestCase):
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(self.config(), f)
         with mock.patch.object(podfetch.requests, 'get', side_effect=self.fakeGet):
-            report = self.quietly(podfetch.checkShow, self.config()['shows'][0])
+            # loadConfig normally works out the show's full path from podcast-folder + folder
+            report = self.quietly(podfetch.checkShow, {**self.config()['shows'][0], 'download-path': self.downloadDir})
         self.assertEqual(report['misnamed'], [('Ep 1 Older .mp3', 'Ep 1 Older.mp3')])
         self.assertEqual(report['duplicates'], [('Ep 2  Newer.mp3', 'Ep 2 Newer.mp3')])
         self.assertEqual(report['notInFeed'], ['Bonus.mp3'])
