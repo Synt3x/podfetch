@@ -16,11 +16,20 @@ A Python script that downloads podcast episodes from RSS feeds into one folder p
    python pod-downloader.py
    ```
 
-It reads every feed first, then downloads, counting as it goes so you can see how many are done and how many are left:
+It reads every feed first and shows what it's about to download, by show, then downloads, counting as it goes so you can see how many are done and how many are left:
 
 ```
-[12/604, 592 left] Downloading [2.5 Admins] 2.5 Admins 323 Something.mp3
+⇣ 512 episodes to download
+  ├─ Linux Matters   53 ep
+  ├─ Ask The Hosts   41 ep
+  └─ Self-Hosted      9 ep  · no new episode since 2025-05-30
+
+[  1/512 · 511 left] Linux Matters › LMP84.mp3
+                     ✔ Linux Matters › LMP84.mp3 · 34.0 MB
+[  2/512 · 510 left] Ask The Hosts › Ask The Hosts – Episode 31.mp3
 ```
+
+In a terminal the output is in colour: finished episodes green, warnings yellow and failures red. Set the `NO_COLOR` environment variable to turn colour off. The log file is always plain text.
 
 Stop it any time with Ctrl+C. Downloads in progress stop straight away, and the next run carries on where it stopped. Each run ends with a summary of what's new, by show, using each feed's own title:
 

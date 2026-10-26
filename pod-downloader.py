@@ -69,6 +69,14 @@ logLock = threading.Lock()
 # Set on Ctrl+C, so downloads in progress stop straight away
 stopEvent = threading.Event()
 
+# Terminal colours, switched on in main() when the output supports them; the log file never gets them
+useColor = False
+colorCodes = {'bold': '1', 'dim': '2', 'red': '31', 'green': '32', 'yellow': '33', 'cyan': '36'}
+colorPattern = re.compile(r'\033\[[0-9;]*m')
+
+# Notes on shows for the overview before downloading, like an ended show still catching up, by folder name
+planNotes = {}
+
 # The download in progress for the progress bar, as (name, bytes done, total bytes); how many characters
 # of progress bar are on screen, so it can be cleared; and when it was last drawn
 activeDownloads = {}
@@ -119,6 +127,30 @@ def cleanName(name, maxLength):
         name = name + '_'
     return name
 
+def paint(text, *styles):
+    # Colour text for the terminal, like paint('✔', 'green'); plain text when colour is off
+    if not useColor or not styles:
+        return text
+    return '\033[{0}m{1}\033[0m'.format(';'.join(colorCodes[style] for style in styles), text)
+
+def enableColor():
+    # Colour only in a terminal, and not when the NO_COLOR environment variable is set.
+    # The Windows console needs colour codes switched on first; if that fails, stay plain
+    if not sys.stdout.isatty() or 'NO_COLOR' in os.environ:
+        return False
+    if os.name != 'nt':
+        return True
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)
+        mode = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        return bool(kernel32.SetConsoleMode(handle, mode.value | 0x0004))
+    except Exception:
+        return False
+
 def log(message):
     # Print a message, and also add it to the log file with the time when one is set.
     # The lock keeps lines from parallel downloads from mixing. The progress line is cleared
@@ -129,7 +161,7 @@ def log(message):
         if logFile:
             try:
                 with open(logFile, 'a', encoding='utf-8') as f:
-                    f.write('{0}  {1}\n'.format(time.strftime('%Y-%m-%d %H:%M:%S'), message))
+                    f.write('{0}  {1}\n'.format(time.strftime('%Y-%m-%d %H:%M:%S'), colorPattern.sub('', message)))
             except OSError as e:
                 print('Could not write to log file {0}: {1}'.format(logFile, e))
         drawProgress()
@@ -215,7 +247,7 @@ def downloadAttempts(episodeUrl, filename, filepath, releaseTime, partialPath, c
     # Try once, then up to maxRetries more times on timeouts, dropped connections and server errors
     for attempt in range(maxRetries + 1):
         if attempt > 0:
-            log('  Retrying ({0}/{1}) in {2}s'.format(attempt, maxRetries, retryDelay))
+            log(paint('  ↻ Retrying ({0}/{1}) in {2}s'.format(attempt, maxRetries, retryDelay), 'yellow'))
             if stopEvent.wait(retryDelay):
                 return None
         if stopEvent.is_set():
@@ -225,7 +257,7 @@ def downloadAttempts(episodeUrl, filename, filepath, releaseTime, partialPath, c
             with requests.get(episodeUrl, allow_redirects=True, stream=True, timeout=requestTimeout) as episodeResponse:
                 # Skip this episode on an error status, so an error page isn't saved as audio
                 if not episodeResponse.ok:
-                    log('Failed to download {0}: HTTP {1}'.format(filename, episodeResponse.status_code))
+                    log(paint('✖ ', 'red') + 'Failed to download {0}: HTTP {1}'.format(filename, episodeResponse.status_code))
                     # Only server errors (5xx) are worth retrying; a 404 won't fix itself
                     if episodeResponse.status_code >= 500:
                         continue
@@ -254,10 +286,10 @@ def downloadAttempts(episodeUrl, filename, filepath, releaseTime, partialPath, c
                 os.utime(filepath, (releaseTime, releaseTime))
             return True
         except requests.RequestException as e:
-            log('Failed to download {0}: {1}'.format(filename, e))
+            log(paint('✖ ', 'red') + 'Failed to download {0}: {1}'.format(filename, e))
         except OSError as e:
             # A file that can't be written won't fix itself on retry; skip it so the rest of the show still runs
-            log('Failed to save {0}: {1}'.format(filename, e))
+            log(paint('✖ ', 'red') + 'Failed to save {0}: {1}'.format(filename, e))
             return False
     # Out of retries; the next run tries this episode again
     return False
@@ -425,16 +457,17 @@ def planPodcast(show, redownload, checkInactive=True):
         missing = sum(1 for episode in episodes if not os.path.isfile(os.path.join(downloadDir, episode['filename'])))
         if not missing and not redownload:
             # Nothing left to get, so turn the show off in config.json; later runs don't read its feed again
-            reason = 'all {0} episodes downloaded and no new episode in {1} days (newest is from {2})'.format(len(episodes), skipInactiveDays, newest)
+            name = paint(displayName(showName(show)), 'cyan')
+            reason = 'all {0} episodes downloaded, no new episode since {1}'.format(len(episodes), newest)
             if dryRun:
-                log('Would disable {0}: {1}'.format(displayName(showName(show)), reason))
+                log('Would disable {0}: {1}'.format(name, reason))
             elif disableShowInConfig(show):
-                log('Disabling {0}: {1}. Set "enabled": 1 in config.json to check it again'.format(displayName(showName(show)), reason))
+                log('Disabling {0}: {1} {2}'.format(name, reason, paint('· set "enabled": 1 to check it again', 'dim')))
             else:
-                log('Skipping {0}: {1}. Could not set "enabled": 0 in config.json, so it will be checked again next run'.format(displayName(showName(show)), reason))
+                log(paint('⚠ ', 'yellow') + 'Skipping {0}: {1} {2}'.format(name, reason, paint('· could not set "enabled": 0 in config.json', 'dim')))
             return []
-        log('{0} has had no new episode in {1} days (newest is from {2}), but {3} episode{4} still missing'.format(
-            displayName(showName(show)), skipInactiveDays, newest, missing, ' is' if missing == 1 else 's are'))
+        # An ended show you're still missing episodes of: download them, and say why in the overview
+        planNotes[showName(show)] = 'no new episode since {0}'.format(newest)
 
     # Create the download directory if it doesn't exist; a dry run changes nothing
     if not dryRun and not os.path.isdir(downloadDir):
@@ -452,7 +485,7 @@ def planPodcast(show, redownload, checkInactive=True):
         # Download if missing, or again if redownload is on (overwrites the existing file)
         if redownload or not os.path.isfile(filepath):
             if dryRun:
-                log('Would download [{0}] {1}'.format(showName(show), filename))
+                log('Would download {0} › {1}'.format(paint(displayName(showName(show)), 'cyan'), filename))
                 totals['downloaded'] += 1
                 wouldDownload[showName(show)] = wouldDownload.get(showName(show), 0) + 1
                 continue
@@ -465,17 +498,21 @@ def planPodcast(show, redownload, checkInactive=True):
 
 def downloadPlanned(job, number, total):
     # Download one episode from planPodcast and count the result. number and total give the
-    # "[12/604, 592 left]" counter, so you can see how far along the run is
+    # "[ 12/604 · 592 left]" counter, so you can see how far along the run is. The numbers are padded
+    # to the same width on every line, so the show names line up
     episode = job['episode']
     filename = episode['filename']
-    log('[{0}/{1}, {2} left] Downloading [{3}] {4}'.format(number, total, total - number, displayName(job['show']), filename))
+    width = len(str(total))
+    counter = '[{0:>{width}}/{1} · {2:>{width}} left]'.format(number, total, total - number, width=width)
+    showLabel = paint(displayName(job['show']), 'cyan')
+    log('{0} {1} › {2}'.format(paint(counter, 'dim'), showLabel, filename))
     debugLog('From {0}'.format(episode['url']))
     debugLog('Saving to {0}'.format(job['filepath']))
     try:
         result = downloadEpisode(episode['url'], filename, job['filepath'], episode['releaseTime'])
     except Exception as e:
         # Anything unexpected fails this one episode, not the whole run
-        log('Failed to download {0}: {1}'.format(filename, e))
+        log(paint('✖ ', 'red') + 'Failed to download {0}: {1}'.format(filename, e))
         result = False
 
     # Stopped with Ctrl+C: neither downloaded nor failed
@@ -493,7 +530,7 @@ def downloadPlanned(job, number, total):
     # Say when each download finishes: the progress line is cleared once it's done, and with several
     # downloads at once the starting lines alone don't show which have finished
     if result and (parallel > 1 or showProgress):
-        log('  ✔ [{0}] {1} ({2})'.format(displayName(job['show']), filename, formatSize(size)))
+        log('{0} {1} {2} › {3} {4}'.format(' ' * len(counter), paint('✔', 'green'), showLabel, filename, paint('· ' + formatSize(size), 'dim')))
 
 def runDownloads(jobs):
     # Download the planned episodes, "parallel" at a time. Ctrl+C stops every download in progress
@@ -606,6 +643,32 @@ def downloadedSize():
     # Total size of the episodes downloaded this run
     return sum(size for show, filename, size in downloadedNames)
 
+def treeLines(rows):
+    # Rows of (name, count, size, note) as a tree with the columns lined up:
+    #   ├─ 2.5 Admins    9 ep   27.0 MB
+    #   └─ Coder Radio   1 ep    3.0 MB
+    # Names are padded before colouring, so colour codes don't upset the columns
+    lines = []
+    if rows:
+        widths = [max(len(row[column]) for row in rows) for column in range(3)]
+        for number, (name, count, size, note) in enumerate(rows):
+            branch = '└─' if number == len(rows) - 1 else '├─'
+            line = '  {0} {1}  {2}  {3}  {4}'.format(paint(branch, 'dim'), paint(name.ljust(widths[0]), 'cyan'),
+                                                    count.rjust(widths[1]), paint(size.rjust(widths[2]), 'dim'), note)
+            lines.append(line.rstrip())
+    return lines
+
+def overviewLines(shows, plans):
+    # Before downloading: how many episodes each show will get, with notes like an ended show catching up
+    #   ⇣ 512 episodes to download
+    #     ├─ Linux Matters   53 ep
+    #     └─ Self-Hosted      9 ep  · no new episode since 2025-05-30
+    total = sum(len(planned) for planned in plans)
+    rows = [(displayName(showName(show)), '{0} ep'.format(len(planned)), '',
+             paint('· ' + planNotes[showName(show)], 'dim') if showName(show) in planNotes else '')
+            for show, planned in zip(shows, plans) if planned]
+    return [paint('⇣ {0} episode{1} to download'.format(total, '' if total == 1 else 's'), 'bold')] + treeLines(rows)
+
 def summaryLines():
     # The end-of-run summary: the totals, then a line per show that got anything, in the order they came up:
     #   ✔ 10 of 10 downloaded · 30.0 MB
@@ -619,7 +682,7 @@ def summaryLines():
         rows = [(displayName(show), '{0} ep'.format(count), '', '') for show, count in wouldDownload.items()]
     else:
         attempted = totals['downloaded'] + totals['failed']
-        mark = '⚠' if hadFailure else '✔'
+        mark = paint('⚠', 'yellow') if hadFailure else paint('✔', 'green')
         if attempted:
             heading = '{0} {1} of {2} downloaded · {3}'.format(mark, totals['downloaded'], attempted, formatSize(downloadedSize()))
         else:
@@ -633,20 +696,11 @@ def summaryLines():
             counts[1] += size
         for show, filename in failedNames:
             shows.setdefault(show, [0, 0, 0])[2] += 1
-        rows = [(displayName(show), '{0} ep'.format(downloaded), formatSize(size), '✖ {0} failed'.format(failed) if failed else '')
+        rows = [(displayName(show), '{0} ep'.format(downloaded), formatSize(size), paint('✖ {0} failed'.format(failed), 'red') if failed else '')
                 for show, (downloaded, size, failed) in shows.items()]
     if totals['failedShows']:
         heading += ' · {0} show{1} could not be read'.format(totals['failedShows'], '' if totals['failedShows'] == 1 else 's')
-
-    # Line the columns up: names on the left, counts and sizes on the right
-    lines = [heading]
-    if rows:
-        widths = [max(len(row[column]) for row in rows) for column in range(3)]
-        for number, (name, count, size, failed) in enumerate(rows):
-            branch = '└─' if number == len(rows) - 1 else '├─'
-            line = '  {0} {1}  {2}  {3}  {4}'.format(branch, name.ljust(widths[0]), count.rjust(widths[1]), size.rjust(widths[2]), failed)
-            lines.append(line.rstrip())
-    return lines
+    return [heading] + treeLines(rows)
 
 def buildNotifyMessage(limit):
     # A short report of the run, cut to fit the service's message limit
@@ -847,14 +901,17 @@ def main(arguments=None):
 
     options = parseArguments(sys.argv[1:] if arguments is None else arguments)
     stopEvent.clear()
+    planNotes.clear()
     configPath = options.config
     config = loadConfig(configPath)
     applySettings(config)
     dryRun = options.dry_run
+    global useColor
+    useColor = enableColor()
 
     # The progress bar and parallel downloads don't mix; say so first thing, so it's not a surprise
     if config.get('show-progressbar', 0) == 1 and parallel > 1:
-        log('Warning: no progress bar while "parallel" is {0}. Set "parallel": 1 to see it, or "show-progressbar": 0 to hide this warning'.format(parallel))
+        log(paint('⚠ No progress bar while "parallel" is {0}'.format(parallel), 'yellow') + paint(' · set "show-progressbar": 0 to hide this', 'dim'))
 
     if options.debug:
         global debug
@@ -867,9 +924,9 @@ def main(arguments=None):
     # --show picks shows by name and runs them even when "enabled" is 0; otherwise every enabled show runs
     shows = pickShows(config['shows'], options.show)
     if not options.show:
-        for show in config['shows']:
-            if show.get('enabled', 1) == 0:
-                log('Skipping {0}: disabled in config'.format(showName(show)))
+        disabled = [showName(show) for show in config['shows'] if show.get('enabled', 1) == 0]
+        if disabled:
+            log(paint('Disabled: ' + ', '.join(disabled), 'dim'))
 
     if options.check:
         for show in shows:
@@ -898,8 +955,16 @@ def main(arguments=None):
         jobs = list(mixedOrder(plans))
     else:
         jobs = [job for planned in plans for job in planned]
+
+    # What's about to download, by show, before it starts. A dry run shows the same in its summary
+    if jobs and not dryRun:
+        log('')
+        for line in overviewLines(shows, plans):
+            log(line)
+        log('')
     completed = runDownloads(jobs)
 
+    log('')
     for line in summaryLines():
         log(line)
 

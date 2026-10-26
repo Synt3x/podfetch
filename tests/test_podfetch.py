@@ -69,6 +69,7 @@ class PodfetchTestCase(unittest.TestCase):
         podfetch.showTitles.clear()
         podfetch.activeDownloads.clear()
         podfetch.progressLength = 0
+        podfetch.planNotes.clear()
 
     def tearDown(self):
         shutil.rmtree(self.tempDir, ignore_errors=True)
@@ -226,6 +227,39 @@ class ProgressTests(PodfetchTestCase):
             podfetch.log('Hello')
             podfetch.finishProgress('a')
         self.assertEqual(output.getvalue(), 'Hello\n')
+
+
+class ColorTests(PodfetchTestCase):
+    def tearDown(self):
+        podfetch.useColor = False
+        podfetch.logFile = None
+        super().tearDown()
+
+    def test_plain_when_off(self):
+        self.assertEqual(podfetch.paint('✔', 'green'), '✔')
+
+    def test_codes_when_on(self):
+        podfetch.useColor = True
+        self.assertEqual(podfetch.paint('✔', 'green'), '\033[32m✔\033[0m')
+        self.assertEqual(podfetch.paint('x', 'bold', 'cyan'), '\033[1;36mx\033[0m')
+
+    def test_log_file_never_gets_colour_codes(self):
+        podfetch.useColor = True
+        podfetch.logFile = os.path.join(self.tempDir, 'run.log')
+        self.quietly(podfetch.log, podfetch.paint('✔', 'green') + ' done')
+        with open(podfetch.logFile, encoding='utf-8') as f:
+            self.assertTrue(f.read().endswith('  ✔ done\n'))
+
+    def test_tree_columns_line_up_with_colour_on(self):
+        podfetch.useColor = True
+        lines = [podfetch.colorPattern.sub('', line) for line in podfetch.treeLines([('A', '9 ep', '1.0 MB', ''), ('Longer name', '10 ep', '12.0 MB', '')])]
+        self.assertEqual(lines, ['  ├─ A             9 ep   1.0 MB', '  └─ Longer name  10 ep  12.0 MB'])
+
+    def test_no_colour_outside_a_terminal(self):
+        with mock.patch.object(podfetch.sys.stdout, 'isatty', return_value=False):
+            self.assertFalse(podfetch.enableColor())
+        with mock.patch.object(podfetch.sys.stdout, 'isatty', return_value=True), mock.patch.dict(os.environ, {'NO_COLOR': '1'}):
+            self.assertFalse(podfetch.enableColor())
 
 
 class MixedOrderTests(unittest.TestCase):
@@ -496,15 +530,17 @@ class RunTests(PodfetchTestCase):
         lines = output.getvalue().splitlines()
         self.assertEqual(lines[-2:], ['✔ 2 of 2 downloaded · 0.0 MB', '  └─ Test  2 ep  0.0 MB'],
                          'the show is named by its feed title, "Test"')
-        self.assertIn('[1/2, 1 left] Downloading [Test] Ep 2 Newer.mp3', lines)
-        self.assertIn('[2/2, 0 left] Downloading [Test] Ep 1 Older.mp3', lines)
+        self.assertEqual(lines[:4], ['', '⇣ 2 episodes to download', '  └─ Test  2 ep', ''], 'the overview comes before the downloads')
+        self.assertIn('[1/2 · 1 left] Test › Ep 2 Newer.mp3', lines)
+        self.assertIn('[2/2 · 0 left] Test › Ep 1 Older.mp3', lines)
         self.assertFalse(any('https://x/' in line for line in lines), 'download URLs only appear with debug')
 
     def test_parallel_downloads_everything(self):
         output = self.run_text(json.dumps({**self.config(), 'parallel': 2}))
         self.assertEqual(sorted(os.listdir(self.downloadDir)), ['Ep 1 Older.mp3', 'Ep 2 Newer.mp3'])
         self.assertEqual(os.listdir(os.path.join(self.tempDir, 'parts')), [], 'no .part files left behind')
-        self.assertIn('  ✔ [Test] Ep 2 Newer.mp3 (0.0 MB)', output)
+        self.assertIn('               ✔ Test › Ep 2 Newer.mp3 · 0.0 MB', output.splitlines(), 'finished lines line up under the counter')
+        self.assertNotIn('no new episode', output, 'notes from other runs never carry over')
         self.assertIn('✔ 2 of 2 downloaded · 0.0 MB', output)
 
     def test_parallel_same_filename_in_two_shows(self):
@@ -551,7 +587,7 @@ class RunTests(PodfetchTestCase):
 
     def test_warning_first_when_progress_bar_and_parallel_are_both_on(self):
         output = self.run_text(json.dumps({**self.config(), 'show-progressbar': 1, 'parallel': 2}))
-        self.assertTrue(output.splitlines()[0].startswith('Warning: no progress bar while "parallel" is 2'))
+        self.assertEqual(output.splitlines()[0], '⚠ No progress bar while "parallel" is 2 · set "show-progressbar": 0 to hide this')
         self.assertNotIn('Warning', self.run_text(json.dumps({**self.config(), 'show-progressbar': 1})))
         self.assertNotIn('Warning', self.run_text(json.dumps({**self.config(), 'parallel': 2})))
 
@@ -607,7 +643,7 @@ class RunTests(PodfetchTestCase):
         text = self.inactiveConfigText()
         output = self.run_text(text)
         self.assertEqual(os.listdir(self.downloadDir), ['Old.mp3'])
-        self.assertIn('but 1 episode is still missing', output)
+        self.assertIn('  └─ Test  1 ep    · no new episode since 2026-01-01', output, 'the overview says why an ended show still downloads')
         with open(os.path.join(self.tempDir, 'config.json'), encoding='utf-8') as f:
             self.assertEqual(f.read(), text, 'not disabled while an episode was missing')
 
@@ -622,7 +658,7 @@ class RunTests(PodfetchTestCase):
             disabledText = f.read()
         self.assertEqual(disabledText, text.replace('"title-as-filename": 1, "enabled": 1}', '"title-as-filename": 1, "enabled": 0}'),
                          'only that show\'s "enabled" changed; the rest of the file is untouched')
-        self.assertIn('Skipping episodes: disabled in config', self.run_text(disabledText))
+        self.assertIn('Disabled: episodes', self.run_text(disabledText))
 
     def test_disabling_adds_enabled_when_missing(self):
         self.feed = makeFeed([('Old', 'https://x/old.mp3', 'Thu, 01 Jan 2026 12:00:00 +0000')])
