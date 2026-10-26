@@ -1,15 +1,23 @@
 import requests
 import os
+import re
 import json
 import shutil
 import tempfile
 import xml.etree.ElementTree as xmlreader
+from urllib.parse import urlparse
 
 # Characters not allowed in Windows filenames
 invalidChars = ['<','>',':','"','/','\\','|','?','*']
 
 # Unfinished downloads go here, outside the project, so they are safe to delete
 partialDir = os.path.join(tempfile.gettempdir(), 'podfetch')
+
+# Seconds to wait for the server to connect or send data before giving up
+requestTimeout = 60
+
+# Folder this script lives in, so config.json is found wherever it's run from
+scriptDir = os.path.dirname(os.path.abspath(__file__))
 
 def downloadPodcast(feedUrl, downloadDir, useTitle):
 
@@ -18,33 +26,41 @@ def downloadPodcast(feedUrl, downloadDir, useTitle):
         os.makedirs(downloadDir)
 
     # Fetch the RSS feed
-    feedResponse = requests.get(feedUrl)
+    feedResponse = requests.get(feedUrl, timeout=requestTimeout)
     feedResponse.raise_for_status()
 
     # Parse the RSS feed as XML
     feedRoot = xmlreader.fromstring(feedResponse.text)
 
     for episode in feedRoot.findall('.//channel/item'):
-        episodeTitle = episode.find('title').text
-        enclosure = episode.find('enclosure').attrib
+        episodeTitle = episode.findtext('title')
+        enclosure = episode.find('enclosure')
 
-        episodeUrl = enclosure['url']
+        # Skip items without an audio file, instead of stopping the whole show
+        if enclosure is None or not enclosure.get('url'):
+            print('Skipping {0}: no audio file in feed'.format(episodeTitle or 'untitled item'))
+            continue
+
+        episodeUrl = enclosure.get('url')
+
+        # Ignore any ?query or #fragment when reading the filename from the URL
+        urlFilename = urlparse(episodeUrl).path.rsplit('/',1)[-1]
 
         # Build filename from episode title or URL
-        if useTitle == 0:
+        if useTitle == 0 or not episodeTitle:
             # Strip path from URL, keep only the filename
-            filename = episodeUrl.rsplit('/',1)[-1]
+            filename = urlFilename
         else:
             # Use episode title + file extension from URL
-            extension = episodeUrl.rsplit('/',1)[-1].rsplit('.',1)[-1]
-            filename = '{0}.{1}'.format(episodeTitle, extension)
+            extension = urlFilename.rsplit('.',1)[-1]
+            filename = '{0}.{1}'.format(episodeTitle.strip(), extension)
 
         # Remove invalid Windows characters from filename
         for char in invalidChars:
             filename = filename.replace(char,'')
 
-        # Collapse any double spaces left behind
-        filename = filename.replace('  ',' ')
+        # Collapse any runs of spaces left behind
+        filename = re.sub(' {2,}', ' ', filename)
 
         filepath = os.path.join(downloadDir, filename)
 
@@ -54,21 +70,25 @@ def downloadPodcast(feedUrl, downloadDir, useTitle):
             os.makedirs(partialDir, exist_ok=True)
             partialPath = os.path.join(partialDir, filename + '.part')
 
-            # Stream to disk in chunks instead of holding the whole episode in memory
-            with requests.get(episodeUrl, allow_redirects=True, stream=True) as episodeResponse:
-                # Skip this episode on an error status, so an error page isn't saved as audio
-                if not episodeResponse.ok:
-                    print('Failed to download {0}: HTTP {1}'.format(filename, episodeResponse.status_code))
-                    continue
-                with open(partialPath, 'wb') as f:
-                    for chunk in episodeResponse.iter_content(chunk_size=1024 * 1024):
-                        f.write(chunk)
-            shutil.move(partialPath, filepath)
+            try:
+                # Stream to disk in chunks instead of holding the whole episode in memory
+                with requests.get(episodeUrl, allow_redirects=True, stream=True, timeout=requestTimeout) as episodeResponse:
+                    # Skip this episode on an error status, so an error page isn't saved as audio
+                    if not episodeResponse.ok:
+                        print('Failed to download {0}: HTTP {1}'.format(filename, episodeResponse.status_code))
+                        continue
+                    with open(partialPath, 'wb') as f:
+                        for chunk in episodeResponse.iter_content(chunk_size=1024 * 1024):
+                            f.write(chunk)
+                shutil.move(partialPath, filepath)
+            except requests.RequestException as e:
+                # A timeout or dropped connection skips this episode; the next run retries it
+                print('Failed to download {0}: {1}'.format(filename, e))
         else:
             print('File {0} has already been downloaded'.format(filename))
 
 # Load podcast list from config file
-with open("config.json", "r") as f:
+with open(os.path.join(scriptDir, 'config.json'), 'r') as f:
     config = json.load(f)
 
 for show in config['shows']:
