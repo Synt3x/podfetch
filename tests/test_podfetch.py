@@ -241,20 +241,26 @@ class NotifyTests(PodfetchTestCase):
 
     def test_message_lists_episodes_and_failures(self):
         podfetch.totals.update(downloaded=1, failed=1)
-        podfetch.downloadedNames.append(('2.5admins', '2.5 Admins 323 Something.mp3'))
+        podfetch.downloadedNames.append(('2.5admins', '2.5 Admins 323 Something.mp3', 51275366))
         podfetch.failedNames.append(('coder raido', '660 Broken.mp3'))
         message = podfetch.buildNotifyMessage(2000)
-        self.assertEqual(message, 'podfetch: 1 new episode, 1 failed\n'
-                                  '• 2.5admins: 2.5 Admins 323 Something\n'
+        self.assertEqual(message, 'podfetch: 1 new episode (48.9 MB), 1 failed\n'
+                                  '• 2.5admins: 2.5 Admins 323 Something (48.9 MB)\n'
                                   'Failed:\n'
                                   '• coder raido: 660 Broken')
 
     def test_message_cut_to_the_limit(self):
         podfetch.totals['downloaded'] = 500
-        podfetch.downloadedNames.extend(('show', 'Episode {0} with a fairly long title.mp3'.format(n)) for n in range(500))
+        podfetch.downloadedNames.extend(('show', 'Episode {0} with a fairly long title.mp3'.format(n), 40 * 1024 ** 2) for n in range(500))
         message = podfetch.buildNotifyMessage(2000)
         self.assertLessEqual(len(message), 2000)
         self.assertRegex(message, r'\.\.\. and \d+ more$')
+        self.assertTrue(message.startswith('podfetch: 500 new episodes (19.5 GB)'), 'the total covers every episode, not just the listed ones')
+
+    def test_format_size(self):
+        self.assertEqual(podfetch.formatSize(0), '0.0 MB')
+        self.assertEqual(podfetch.formatSize(51275366), '48.9 MB')
+        self.assertEqual(podfetch.formatSize(3 * 1024 ** 3), '3.0 GB')
 
     def test_notify_when(self):
         targets = [{'type': 'discord', 'url': 'https://discord.test/hook'}]

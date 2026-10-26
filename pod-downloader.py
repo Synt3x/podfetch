@@ -324,7 +324,7 @@ def downloadPlanned(job):
     log('Downloading {0} from url {1}'.format(filename, episode['url']))
     if downloadEpisode(episode['url'], filename, job['filepath'], episode['releaseTime']):
         totals['downloaded'] += 1
-        downloadedNames.append((job['show'], filename))
+        downloadedNames.append((job['show'], filename, os.path.getsize(job['filepath'])))
     else:
         totals['failed'] += 1
         failedNames.append((job['show'], filename))
@@ -403,16 +403,28 @@ def checkShow(show, listLimit=20):
     listSection('Not in the feed', notInFeed)
     return {'missing': missing, 'misnamed': misnamed, 'duplicates': duplicates, 'notInFeed': notInFeed}
 
+def formatSize(size):
+    # A byte count as MB, or GB from 1 GB up
+    if size >= 1024 ** 3:
+        return '{0:.1f} GB'.format(size / 1024 ** 3)
+    return '{0:.1f} MB'.format(size / 1024 ** 2)
+
+def downloadedSize():
+    # Total size of the episodes downloaded this run
+    return sum(size for show, filename, size in downloadedNames)
+
 def buildNotifyMessage(limit):
     # A short report of the run, cut to fit the service's message limit
     heading = 'podfetch: {0} new episode{1}'.format(totals['downloaded'], '' if totals['downloaded'] == 1 else 's')
+    if downloadedNames:
+        heading += ' ({0})'.format(formatSize(downloadedSize()))
     if totals['failed']:
         heading += ', {0} failed'.format(totals['failed'])
     if totals['failedShows']:
         heading += ', {0} show(s) could not be read'.format(totals['failedShows'])
 
     lines = [heading]
-    lines += ['• {0}: {1}'.format(show, filename.rsplit('.',1)[0]) for show, filename in downloadedNames]
+    lines += ['• {0}: {1} ({2})'.format(show, filename.rsplit('.',1)[0], formatSize(size)) for show, filename, size in downloadedNames]
     if failedNames:
         lines.append('Failed:')
         lines += ['• {0}: {1}'.format(show, filename.rsplit('.',1)[0]) for show, filename in failedNames]
@@ -626,7 +638,8 @@ def main(arguments=None):
     if dryRun:
         summary = 'Dry run: would download {0}, {1} already downloaded'.format(totals['downloaded'], totals['skipped'])
     else:
-        summary = 'Done: {0} downloaded, {1} failed, {2} already downloaded'.format(totals['downloaded'], totals['failed'], totals['skipped'])
+        summary = 'Done: {0} downloaded ({1}), {2} failed, {3} already downloaded'.format(
+            totals['downloaded'], formatSize(downloadedSize()), totals['failed'], totals['skipped'])
     if totals['failedShows']:
         summary += ', {0} show(s) could not be read'.format(totals['failedShows'])
     log(summary)
