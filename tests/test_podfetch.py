@@ -67,6 +67,8 @@ class PodfetchTestCase(unittest.TestCase):
         podfetch.failedNames.clear()
         podfetch.wouldDownload.clear()
         podfetch.showTitles.clear()
+        podfetch.activeDownloads.clear()
+        podfetch.progressLength = 0
 
     def tearDown(self):
         shutil.rmtree(self.tempDir, ignore_errors=True)
@@ -189,6 +191,53 @@ class InactiveTests(unittest.TestCase):
     def test_off_or_without_dates(self):
         self.assertFalse(podfetch.isInactive([{'releaseTime': self.now - 100 * self.day}], 0, self.now))
         self.assertFalse(podfetch.isInactive([{'releaseTime': None}], 90, self.now))
+
+
+class ProgressTests(PodfetchTestCase):
+    megabyte = 1024 * 1024
+
+    def test_one_download_gets_a_bar(self):
+        self.assertEqual(podfetch.renderProgress([('Ep', 22 * self.megabyte, 44 * self.megabyte)], 100),
+                         '  [###############---------------]  50%  22.0 / 44.0 MB')
+
+    def test_unknown_size(self):
+        self.assertEqual(podfetch.renderProgress([('Ep', 5 * self.megabyte, 0)], 100), '  5.0 MB')
+
+    def test_several_downloads_share_one_line(self):
+        line = podfetch.renderProgress([('2.5 Admins 323 Something', 22 * self.megabyte, 49 * self.megabyte),
+                                        ('691 Some Title', 7 * self.megabyte, 58 * self.megabyte)], 120)
+        self.assertEqual(line, '⬇ 2.5 Admins 323 Something 44% 22/49 MB │ 691 Some Title 12% 7/58 MB')
+
+    def test_long_names_shortened_to_fit(self):
+        downloads = [('A very long episode title that goes on and on ' * 2, self.megabyte, 10 * self.megabyte),
+                     ('Another long episode title that also goes on ' * 2, self.megabyte, 0)]
+        for width in (40, 60, 80):
+            line = podfetch.renderProgress(downloads, width)
+            self.assertLessEqual(len(line), width)
+            self.assertIn('…', line)
+            if width >= 60:
+                self.assertIn('10% 1/10 MB', line, 'names are shortened before the numbers')
+
+    def test_messages_print_above_the_progress_line(self):
+        podfetch.showProgress = True
+        output = io.StringIO()
+        with redirect_stdout(output), mock.patch.object(podfetch.shutil, 'get_terminal_size', return_value=os.terminal_size((80, 24))):
+            podfetch.updateProgress('a', 'Ep A', self.megabyte, 2 * self.megabyte, force=True)
+            podfetch.log('Downloading B')
+            podfetch.finishProgress('a')
+        text = output.getvalue()
+        # Bar drawn, cleared for the message, drawn again below it, then cleared when finished
+        bar = '  [###############---------------]  50%  1.0 / 2.0 MB'
+        self.assertEqual(text, '\r' + bar + '\r' + ' ' * len(bar) + '\r' + 'Downloading B\n' + '\r' + bar + '\r' + ' ' * len(bar) + '\r')
+        self.assertEqual(podfetch.activeDownloads, {})
+
+    def test_progress_off_prints_nothing_extra(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            podfetch.updateProgress('a', 'Ep A', 1, 2, force=True)
+            podfetch.log('Hello')
+            podfetch.finishProgress('a')
+        self.assertEqual(output.getvalue(), 'Hello\n')
 
 
 class MixedOrderTests(unittest.TestCase):
@@ -504,12 +553,10 @@ class RunTests(PodfetchTestCase):
         finally:
             podfetch.stopEvent.clear()
 
-    def test_parallel_turns_off_the_progress_bar(self):
+    def test_parallel_keeps_the_progress_bar(self):
         with mock.patch.object(podfetch.sys.stdout, 'isatty', return_value=True):
-            podfetch.applySettings({'show-progressbar': 1})
-            self.assertTrue(podfetch.showProgress)
             podfetch.applySettings({'show-progressbar': 1, 'parallel': 2})
-            self.assertFalse(podfetch.showProgress)
+            self.assertTrue(podfetch.showProgress)
         podfetch.applySettings({})
 
     def test_debug_shows_where_episodes_come_from(self):

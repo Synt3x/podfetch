@@ -69,6 +69,12 @@ logLock = threading.Lock()
 # Set on Ctrl+C, so downloads in progress stop straight away
 stopEvent = threading.Event()
 
+# Downloads in progress for the progress line, as (name, bytes done, total bytes) in the order they started;
+# how many characters of progress line are on screen, so it can be cleared; and when it was last drawn
+activeDownloads = {}
+progressLength = 0
+lastProgressDraw = 0.0
+
 # The config.json in use, so a finished inactive show can be disabled in it
 configPath = os.path.join(scriptDir, 'config.json')
 
@@ -115,8 +121,10 @@ def cleanName(name, maxLength):
 
 def log(message):
     # Print a message, and also add it to the log file with the time when one is set.
-    # The lock keeps lines from parallel downloads from mixing
+    # The lock keeps lines from parallel downloads from mixing. The progress line is cleared
+    # first and drawn again below the message, so messages never land in the middle of it
     with logLock:
+        clearProgress()
         print(message, flush=True)
         if logFile:
             try:
@@ -124,22 +132,76 @@ def log(message):
                     f.write('{0}  {1}\n'.format(time.strftime('%Y-%m-%d %H:%M:%S'), message))
             except OSError as e:
                 print('Could not write to log file {0}: {1}'.format(logFile, e))
+        drawProgress()
 
 def debugLog(message):
     # Details only shown with "debug": 1 or --debug, like where each episode is downloaded from
     if debug:
         log('  [debug] ' + message)
 
-def printProgress(done, total):
-    # Redraw the bar on the same line; without a known size, show MB downloaded only
-    doneMb = done / (1024 * 1024)
-    if total:
-        width = 30
-        filled = width * done // total
-        bar = '#' * filled + '-' * (width - filled)
-        print('\r  [{0}] {1:3d}%  {2:.1f} / {3:.1f} MB'.format(bar, 100 * done // total, doneMb, total / (1024 * 1024)), end='', flush=True)
-    else:
-        print('\r  {0:.1f} MB'.format(doneMb), end='', flush=True)
+def renderProgress(downloads, width):
+    # The progress line for the downloads in progress, each a (name, bytes done, total bytes) tuple,
+    # cut to fit width. One download gets a bar; several share the line:
+    #   ⬇ 2.5 Admins 323 Something 45% 22/49 MB │ 691 Some Title 12% 7/58 MB
+    megabyte = 1024 * 1024
+    if len(downloads) == 1:
+        name, done, total = downloads[0]
+        if total:
+            filled = 30 * done // total
+            line = '  [{0}] {1:3d}%  {2:.1f} / {3:.1f} MB'.format('#' * filled + '-' * (30 - filled), 100 * done // total, done / megabyte, total / megabyte)
+        else:
+            line = '  {0:.1f} MB'.format(done / megabyte)
+        return line[:width]
+
+    stats = ['{0}% {1:.0f}/{2:.0f} MB'.format(100 * done // total, done / megabyte, total / megabyte) if total else '{0:.0f} MB'.format(done / megabyte)
+             for name, done, total in downloads]
+    prefix, separator = '⬇ ', ' │ '
+    # Share what's left after the numbers between the names, shortening long ones with …
+    room = width - len(prefix) - len(separator) * (len(downloads) - 1) - sum(len(stat) + 1 for stat in stats)
+    nameWidth = max(8, room // len(downloads))
+    parts = []
+    for (name, done, total), stat in zip(downloads, stats):
+        if len(name) > nameWidth:
+            name = name[:nameWidth - 1].rstrip() + '…'
+        parts.append('{0} {1}'.format(name, stat))
+    line = prefix + separator.join(parts)
+    return line if len(line) <= width else line[:width - 1] + '…'
+
+def clearProgress():
+    # Remove the progress line from the screen. Called with logLock held
+    global progressLength
+    if progressLength:
+        sys.stdout.write('\r' + ' ' * progressLength + '\r')
+        progressLength = 0
+
+def drawProgress():
+    # Draw the progress line for the downloads in progress, over the old one. Called with logLock held
+    global progressLength, lastProgressDraw
+    if not showProgress or not activeDownloads:
+        return
+    line = renderProgress(list(activeDownloads.values()), shutil.get_terminal_size((100, 24)).columns - 1)
+    sys.stdout.write('\r' + line + ' ' * max(0, progressLength - len(line)))
+    sys.stdout.flush()
+    progressLength = len(line)
+    lastProgressDraw = time.monotonic()
+
+def updateProgress(key, name, done, total, force=False):
+    # Note how far a download has got, and redraw the progress line at most 5 times a second
+    if not showProgress:
+        return
+    with logLock:
+        activeDownloads[key] = (name, done, total)
+        if force or time.monotonic() - lastProgressDraw >= 0.2:
+            drawProgress()
+
+def finishProgress(key):
+    # Take a finished, failed or stopped download off the progress line
+    if not showProgress:
+        return
+    with logLock:
+        activeDownloads.pop(key, None)
+        clearProgress()
+        drawProgress()
 
 def throttleDelay(done, elapsed, bytesPerSecond):
     # Seconds to pause so the average speed so far stays under the limit
@@ -156,6 +218,16 @@ def downloadEpisode(episodeUrl, filename, filepath, releaseTime):
 
     # Smaller chunks when the speed is limited, so the pauses between them stay short
     chunkSize = 64 * 1024 if maxSpeed else 1024 * 1024
+
+    # However this ends, take the download off the progress line
+    try:
+        return downloadAttempts(episodeUrl, filename, filepath, releaseTime, partialPath, chunkSize)
+    finally:
+        finishProgress(filepath)
+
+def downloadAttempts(episodeUrl, filename, filepath, releaseTime, partialPath, chunkSize):
+    # The download itself, for downloadEpisode. Same return values
+    progressName = filename.rsplit('.',1)[0]
 
     # Try once, then up to maxRetries more times on timeouts, dropped connections and server errors
     for attempt in range(maxRetries + 1):
@@ -178,6 +250,7 @@ def downloadEpisode(episodeUrl, filename, filepath, releaseTime):
                 total = int(episodeResponse.headers.get('Content-Length') or 0)
                 done = 0
                 started = time.monotonic()
+                updateProgress(filepath, progressName, done, total, force=True)
                 with open(partialPath, 'wb') as f:
                     for chunk in episodeResponse.iter_content(chunk_size=chunkSize):
                         # Ctrl+C: stop now, leaving the .part file; the next run downloads the episode again
@@ -185,15 +258,12 @@ def downloadEpisode(episodeUrl, filename, filepath, releaseTime):
                             return None
                         f.write(chunk)
                         done += len(chunk)
-                        if showProgress:
-                            printProgress(done, total)
+                        updateProgress(filepath, progressName, done, total)
                         # "max-speed": pause as needed to stay under the limit
                         if maxSpeed:
                             delay = throttleDelay(done, time.monotonic() - started, maxSpeed * 1024)
                             if delay > 0:
                                 time.sleep(delay)
-                if showProgress:
-                    print()
             shutil.move(partialPath, filepath)
 
             # Date the file by the episode's release, so sorting by date matches release order
@@ -201,13 +271,9 @@ def downloadEpisode(episodeUrl, filename, filepath, releaseTime):
                 os.utime(filepath, (releaseTime, releaseTime))
             return True
         except requests.RequestException as e:
-            if showProgress:
-                print()
             log('Failed to download {0}: {1}'.format(filename, e))
         except OSError as e:
             # A file that can't be written won't fix itself on retry; skip it so the rest of the show still runs
-            if showProgress:
-                print()
             log('Failed to save {0}: {1}'.format(filename, e))
             return False
     # Out of retries; the next run tries this episode again
@@ -441,8 +507,9 @@ def downloadPlanned(job, number, total):
             totals['failed'] += 1
             failedNames.append((job['show'], filename))
 
-    # Without a progress bar, say when each parallel download finishes
-    if result and parallel > 1:
+    # Say when each download finishes: the progress line is cleared once it's done, and with several
+    # downloads at once the starting lines alone don't show which have finished
+    if result and (parallel > 1 or showProgress):
         log('  ✔ [{0}] {1} ({2})'.format(displayName(job['show']), filename, formatSize(size)))
 
 def runDownloads(jobs):
@@ -757,11 +824,8 @@ def applySettings(config):
     skipInactiveDays = config.get('skip-inactive-days', 0)
     # "debug": 1 shows extra details, like the feed URLs and where each episode is downloaded from
     debug = config.get('debug', 0) == 1
-    # "parallel": how many episodes download at the same time. Several progress bars can't share
-    # one line, so the bar is left off when it's above 1
+    # "parallel": how many episodes download at the same time; the progress line then shows them all
     parallel = config.get('parallel', 1)
-    if parallel > 1:
-        showProgress = False
 
 def pickShows(shows, names):
     # The shows --show asks for, matched by folder name, or by part of the folder name or feed URL
