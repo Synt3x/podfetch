@@ -11,10 +11,11 @@
   "log-file": "",
   "notify": [],
   "notify-when": "changes",
+  "download-path": "/podcast",
   "shows": [
     {
-      "show-url": "https://2.5admins.com/feed/podcast/",
-      "download-path": "/podcast/2.5admins",
+      "url": "https://2.5admins.com/feed/podcast/",
+      "folder": "2.5admins",
       "title-as-filename": 1,
       "enabled": 1,
       "max-episodes": 0,

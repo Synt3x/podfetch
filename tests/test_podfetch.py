@@ -301,16 +301,40 @@ class ConfigTests(PodfetchTestCase):
         self.assertIn('line 1, column', self.configError('{"shows": [}'))
 
     def test_wrong_type_and_missing_setting(self):
-        error = self.configError({'timeout': '60', 'shows': [{'show-url': 'x', 'title-as-filename': 1}]})
+        error = self.configError({'timeout': '60', 'shows': [{'url': 'x', 'title-as-filename': 1}]})
         self.assertIn('"timeout" at the top of config.json should be a number', error)
-        self.assertIn('"download-path" is missing in show 1', error)
+        self.assertIn('"folder" is missing in show 1', error)
 
     def test_bad_notify_and_skip_episodes(self):
         error = self.configError({'notify': [{'type': 'teams', 'url': 'x'}], 'notify-when': 'sometimes',
-                                  'shows': [{'show-url': 'x', 'download-path': 'y', 'title-as-filename': 1, 'skip-episodes': [1]}]})
+                                  'shows': [{'url': 'x', 'download-path': 'y', 'title-as-filename': 1, 'skip-episodes': [1]}]})
         self.assertIn('notify entry 1 needs a "type"', error)
         self.assertIn('"notify-when" should be one of', error)
         self.assertIn('"skip-episodes" in show 1', error)
+
+    def test_folder_joins_the_top_level_download_path(self):
+        config = self.quietly(podfetch.loadConfig, self.writeConfig({
+            'download-path': 'Z:/', 'shows': [
+                {'url': 'https://x/a', 'folder': '2.5admins', 'title-as-filename': 1},
+                {'url': 'https://x/b', 'folder': 'ignored', 'download-path': 'D:/elsewhere', 'title-as-filename': 1},
+            ]}))
+        self.assertEqual(config['shows'][0]['download-path'], os.path.join('Z:/', '2.5admins'))
+        self.assertEqual(podfetch.showName(config['shows'][0]), '2.5admins')
+        self.assertEqual(config['shows'][1]['download-path'], 'D:/elsewhere', "a show's own download-path wins")
+
+    def test_folder_needs_a_download_path(self):
+        error = self.configError({'shows': [{'url': 'x', 'folder': 'a', 'title-as-filename': 1},
+                                            {'url': 'x', 'title-as-filename': 1}]})
+        self.assertIn('"folder" in show 1 needs "download-path" at the top', error)
+        self.assertIn('"folder" is missing in show 2', error)
+
+    def test_old_show_url_name_still_works(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            config = podfetch.loadConfig(self.writeConfig({'shows': [
+                {'show-url': 'https://x/feed', 'download-path': 'y', 'title-as-filename': 1}]}))
+        self.assertEqual(config['shows'][0]['url'], 'https://x/feed')
+        self.assertNotIn('unknown setting', output.getvalue())
 
     def test_unknown_setting_only_warns(self):
         output = io.StringIO()
@@ -321,9 +345,9 @@ class ConfigTests(PodfetchTestCase):
 
 class PickShowsTests(unittest.TestCase):
     shows = [
-        {'show-url': 'https://2.5admins.com/feed/podcast/', 'download-path': 'Z:/2.5admins'},
-        {'show-url': 'https://linuxunplugged.com/rss', 'download-path': 'Z:/linux unplugged', 'enabled': 0},
-        {'show-url': 'https://latenightlinux.com/feed/mp3', 'download-path': 'Z:/late night linux'},
+        {'url': 'https://2.5admins.com/feed/podcast/', 'download-path': 'Z:/2.5admins'},
+        {'url': 'https://linuxunplugged.com/rss', 'download-path': 'Z:/linux unplugged', 'enabled': 0},
+        {'url': 'https://latenightlinux.com/feed/mp3', 'download-path': 'Z:/late night linux'},
     ]
 
     def test_without_names_only_enabled_shows(self):
@@ -364,7 +388,7 @@ class RunTests(PodfetchTestCase):
 
     def config(self, **show):
         return {'temp-path': os.path.join(self.tempDir, 'parts'),
-                'shows': [{'show-url': 'https://x/feed', 'download-path': self.downloadDir, 'title-as-filename': 1, **show}]}
+                'shows': [{'url': 'https://x/feed', 'download-path': self.downloadDir, 'title-as-filename': 1, **show}]}
 
     def test_download_names_and_dates_files(self):
         self.assertEqual(self.run_main(self.config()), 0)
@@ -394,7 +418,7 @@ class RunTests(PodfetchTestCase):
         otherDir = os.path.join(self.tempDir, 'other')
         config = self.config()
         config['random-show'] = 1
-        config['shows'].append({'show-url': 'https://x/feed', 'download-path': otherDir, 'title-as-filename': 1})
+        config['shows'].append({'url': 'https://x/feed', 'download-path': otherDir, 'title-as-filename': 1})
         self.assertEqual(self.run_main(config), 0)
         self.assertEqual(sorted(os.listdir(self.downloadDir)), ['Ep 1 Older.mp3', 'Ep 2 Newer.mp3'])
         self.assertEqual(sorted(os.listdir(otherDir)), ['Ep 1 Older.mp3', 'Ep 2 Newer.mp3'])

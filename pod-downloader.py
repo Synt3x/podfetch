@@ -279,7 +279,7 @@ def planPodcast(show, redownload, checkInactive=True):
     # Work out which of a show's episodes need downloading. Returns them in download order;
     # a dry run lists them and returns nothing, since nothing will be downloaded
     downloadDir = show['download-path']
-    feedRoot = fetchFeed(show['show-url'])
+    feedRoot = fetchFeed(show['url'])
     allEpisodes = buildEpisodes(feedRoot, downloadDir, show['title-as-filename'])
 
     # "skip-inactive-days": skip shows with no new episode in that many days, unless picked with --show
@@ -360,7 +360,7 @@ def looseName(filename):
 def checkShow(show, listLimit=20):
     # Report how a show's folder compares with its feed, without changing anything
     downloadDir = show['download-path']
-    feedRoot = fetchFeed(show['show-url'])
+    feedRoot = fetchFeed(show['url'])
     episodes = selectEpisodes(buildEpisodes(feedRoot, downloadDir, show['title-as-filename']),
                               show.get('skip-episodes', []), show.get('max-episodes', 0))
     files = sorted(f for f in os.listdir(downloadDir) if os.path.isfile(os.path.join(downloadDir, f))) if os.path.isdir(downloadDir) else []
@@ -457,13 +457,14 @@ def sendNotifications(notify, notifyWhen):
 settingTypes = {
     'show-progressbar': int, 'hide-skipped': int, 'timeout': int, 'temp-path': str,
     'retries': int, 'oldest-first': int, 'log-file': str, 'max-speed': int,
-    'skip-inactive-days': int, 'random-show': int, 'notify': list, 'notify-when': str, 'shows': list,
+    'skip-inactive-days': int, 'random-show': int, 'notify': list, 'notify-when': str,
+    'download-path': str, 'shows': list,
 }
 showSettingTypes = {
-    'show-url': str, 'download-path': str, 'title-as-filename': int,
+    'url': str, 'folder': str, 'download-path': str, 'title-as-filename': int,
     'enabled': int, 'redownload': int, 'max-episodes': int, 'skip-episodes': list,
 }
-requiredShowSettings = ['show-url', 'download-path', 'title-as-filename']
+requiredShowSettings = ['url', 'title-as-filename']
 notifyWhenChoices = ['changes', 'failures', 'always']
 
 def checkSettings(settings, types, where, problems):
@@ -506,10 +507,22 @@ def loadConfig(configPath):
         if not isinstance(show, dict):
             problems.append('show {0} should be a {{ ... }} block'.format(number))
             continue
+        # "show-url" is the old name for "url"; configs that use it keep working
+        if 'url' not in show and 'show-url' in show:
+            show['url'] = show.pop('show-url')
         for key in requiredShowSettings:
             if key not in show:
                 problems.append('"{0}" is missing {1}'.format(key, where))
         checkSettings(show, showSettingTypes, where, problems)
+
+        # A show's folder is its own "download-path", or its "folder" inside the top-level "download-path"
+        if 'download-path' not in show:
+            if 'folder' not in show:
+                problems.append('"folder" is missing {0}'.format(where))
+            elif not isinstance(config.get('download-path'), str) or not config['download-path']:
+                problems.append('"folder" {0} needs "download-path" at the top of config.json, the folder all shows go in'.format(where))
+            elif isinstance(show['folder'], str):
+                show['download-path'] = os.path.join(config['download-path'], show['folder'])
         if isinstance(show.get('skip-episodes'), list) and not all(isinstance(entry, str) for entry in show['skip-episodes']):
             problems.append('"skip-episodes" {0} should be a list of episode titles or filenames'.format(where))
     if problems:
@@ -548,7 +561,7 @@ def pickShows(shows, names):
         name = name.lower()
         matches = [show for show in shows if showName(show).lower() == name]
         if not matches:
-            matches = [show for show in shows if name in showName(show).lower() or name in show['show-url'].lower()]
+            matches = [show for show in shows if name in showName(show).lower() or name in show['url'].lower()]
         if not matches:
             sys.exit('No show matches "{0}". Shows in config.json: {1}'.format(name, ', '.join(showName(show) for show in shows)))
         picked += [show for show in matches if show not in picked]
@@ -596,7 +609,7 @@ def main(arguments=None):
             redownload = options.redownload or show.get('redownload', 0) == 1
             return planPodcast(show, redownload, checkInactive=not options.show)
         except Exception as e:
-            log('Failed to process {0}: {1}'.format(show['show-url'], e))
+            log('Failed to process {0}: {1}'.format(show['url'], e))
             totals['failedShows'] += 1
             return []
 
