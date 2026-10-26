@@ -19,6 +19,7 @@ def downloadPodcast(feedUrl, downloadDir, useTitle):
 
     # Fetch the RSS feed
     feedResponse = requests.get(feedUrl)
+    feedResponse.raise_for_status()
 
     # Parse the RSS feed as XML
     feedRoot = xmlreader.fromstring(feedResponse.text)
@@ -55,6 +56,10 @@ def downloadPodcast(feedUrl, downloadDir, useTitle):
 
             # Stream to disk in chunks instead of holding the whole episode in memory
             with requests.get(episodeUrl, allow_redirects=True, stream=True) as episodeResponse:
+                # Skip this episode on an error status, so an error page isn't saved as audio
+                if not episodeResponse.ok:
+                    print('Failed to download {0}: HTTP {1}'.format(filename, episodeResponse.status_code))
+                    continue
                 with open(partialPath, 'wb') as f:
                     for chunk in episodeResponse.iter_content(chunk_size=1024 * 1024):
                         f.write(chunk)
