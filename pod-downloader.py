@@ -2,6 +2,7 @@ import requests
 import os
 import re
 import json
+import mimetypes
 import shutil
 import sys
 import tempfile
@@ -17,6 +18,57 @@ scriptDir = os.path.dirname(os.path.abspath(__file__))
 
 # Seconds to wait between retries of a failed download
 retryDelay = 5
+
+# Names Windows reserves for devices, which can't be used as filenames
+reservedNames = {'CON', 'PRN', 'AUX', 'NUL'} | {'COM{0}'.format(i) for i in range(1, 10)} | {'LPT{0}'.format(i) for i in range(1, 10)}
+
+# Longest filename (without extension) to keep; it's shortened further when the folder path is long
+maxNameLength = 150
+
+# Windows paths can't be longer than this
+maxPathLength = 259
+
+# Linux and macOS limit filenames to 255 bytes; accented characters and symbols take more than one.
+# Leaves room for a " (99)" number and a ".xxxx" extension
+maxNameBytes = 240
+
+# Extensions for common podcast file types, used when the URL has none
+typeExtensions = {
+    'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a',
+    'audio/aac': 'aac', 'audio/ogg': 'ogg', 'audio/opus': 'opus', 'video/mp4': 'mp4',
+}
+
+def getExtension(urlFilename, enclosureType):
+    # Prefer the extension in the URL; otherwise go by the file type the feed declares
+    if '.' in urlFilename:
+        return urlFilename.rsplit('.',1)[-1]
+    enclosureType = (enclosureType or '').split(';')[0].strip().lower()
+    if enclosureType in typeExtensions:
+        return typeExtensions[enclosureType]
+    guessed = mimetypes.guess_extension(enclosureType) if enclosureType else None
+    return guessed.lstrip('.') if guessed else ''
+
+def cleanName(name, maxLength):
+    # Turn line breaks, tabs and other control characters into spaces
+    name = ''.join(' ' if ord(char) < 32 else char for char in name)
+
+    # Remove invalid Windows characters from filename
+    for char in invalidChars:
+        name = name.replace(char,'')
+
+    # Collapse any runs of spaces left behind
+    name = re.sub(' {2,}', ' ', name)
+
+    # Keep the name short enough for Windows, then drop trailing dots and spaces, which Windows doesn't allow
+    name = name[:maxLength]
+    while len(name.encode('utf-8')) > maxNameBytes:
+        name = name[:-1]
+    name = name.strip().rstrip('.').strip()
+
+    # Avoid device names like CON or NUL, which Windows won't create as files
+    if name.upper() in reservedNames:
+        name = name + '_'
+    return name
 
 def printProgress(done, total):
     # Redraw the bar on the same line; without a known size, show MB downloaded only
@@ -65,6 +117,12 @@ def downloadEpisode(episodeUrl, filename, filepath):
             if showProgress:
                 print()
             print('Failed to download {0}: {1}'.format(filename, e))
+        except OSError as e:
+            # A file that can't be written won't fix itself on retry; skip it so the rest of the show still runs
+            if showProgress:
+                print()
+            print('Failed to save {0}: {1}'.format(filename, e))
+            return
     # Out of retries; the next run tries this episode again
 
 def downloadPodcast(feedUrl, downloadDir, useTitle, redownload):
@@ -77,16 +135,21 @@ def downloadPodcast(feedUrl, downloadDir, useTitle, redownload):
     feedResponse = requests.get(feedUrl, timeout=requestTimeout)
     feedResponse.raise_for_status()
 
-    # Parse the RSS feed as XML
-    feedRoot = xmlreader.fromstring(feedResponse.text)
+    # Parse the raw bytes, so the XML declaration decides the text encoding instead of a guess
+    feedRoot = xmlreader.fromstring(feedResponse.content)
 
-    episodes = feedRoot.findall('.//channel/item')
+    # Work out every filename first, oldest episode first (feeds list the newest first),
+    # so a repeated title gets the same name no matter which order episodes download in
+    # On Windows, keep names short enough that both the download path and the .part path fit within the
+    # path limit, leaving room for the separator, a " (99)" number for repeated titles and a ".xxxx" extension
+    nameLength = maxNameLength
+    if os.name == 'nt':
+        longestDir = max(len(os.path.abspath(downloadDir)), len(os.path.abspath(partialDir)) + len('.part'))
+        nameLength = max(20, min(maxNameLength, maxPathLength - longestDir - 1 - 5 - 5))
 
-    # Feeds list the newest episode first; reverse to download in release order
-    if oldestFirst:
-        episodes.reverse()
-
-    for episode in episodes:
+    episodes = []
+    usedNames = set()
+    for episode in reversed(feedRoot.findall('.//channel/item')):
         episodeTitle = episode.findtext('title')
         enclosure = episode.find('enclosure')
 
@@ -99,23 +162,33 @@ def downloadPodcast(feedUrl, downloadDir, useTitle, redownload):
 
         # Ignore any ?query or #fragment when reading the filename from the URL
         urlFilename = urlparse(episodeUrl).path.rsplit('/',1)[-1]
+        extension = getExtension(urlFilename, enclosure.get('type'))
 
-        # Build filename from episode title or URL
-        if useTitle == 0 or not episodeTitle:
+        # Build filename from episode title or URL, without the extension
+        if useTitle == 0 or not episodeTitle or not cleanName(episodeTitle, nameLength):
             # Strip path from URL, keep only the filename
-            filename = urlFilename
+            name = cleanName(urlFilename.rsplit('.',1)[0] if '.' in urlFilename else urlFilename, nameLength)
         else:
-            # Use episode title + file extension from URL
-            extension = urlFilename.rsplit('.',1)[-1]
-            filename = '{0}.{1}'.format(episodeTitle.strip(), extension)
+            name = cleanName(episodeTitle, nameLength)
+        name = name or 'episode'
 
-        # Remove invalid Windows characters from filename
-        for char in invalidChars:
-            filename = filename.replace(char,'')
+        # Number repeated names, so a second episode with the same title isn't taken as already downloaded.
+        # Windows ignores case in filenames, so compare in lower case
+        uniqueName = name
+        count = 2
+        while uniqueName.lower() in usedNames:
+            uniqueName = '{0} ({1})'.format(name, count)
+            count += 1
+        usedNames.add(uniqueName.lower())
 
-        # Collapse any runs of spaces left behind
-        filename = re.sub(' {2,}', ' ', filename)
+        filename = '{0}.{1}'.format(uniqueName, extension) if extension else uniqueName
+        episodes.append((filename, episodeUrl))
 
+    # The list is oldest first; flip it back unless downloading in release order
+    if not oldestFirst:
+        episodes.reverse()
+
+    for filename, episodeUrl in episodes:
         filepath = os.path.join(downloadDir, filename)
 
         # Download if missing, or again if redownload is on (overwrites the existing file)
