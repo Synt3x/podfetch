@@ -73,11 +73,11 @@ Options can be combined, for example `python pod-downloader.py --show 2.5admins 
   ],
   "notify-when": "changes",
   "podcast-folder": "/podcast",
+  "filename-format": "{show} - {date} - {episode} - {title}",
   "shows": [
     {
       "url": "https://2.5admins.com/feed/podcast/",
       "folder": "2.5admins",
-      "title-as-filename": 1,
       "enabled": 1,
       "max-episodes": 0,
       "skip-episodes": []
@@ -86,7 +86,7 @@ Options can be combined, for example `python pod-downloader.py --show 2.5admins 
 }
 ```
 
-Episodes are saved in `podcast-folder` + each show's `folder`, so the example above saves 2.5 Admins episodes in `/podcast/2.5admins`. Only `podcast-folder` and `shows`, and in each show `url`, `folder` and `title-as-filename`, are required. Anything else that's missing uses its default. A misspelled setting name gets a warning, and other mistakes in the file get a message saying what to fix.
+Episodes are saved in `podcast-folder` + each show's `folder`, so the example above saves 2.5 Admins episodes in `/podcast/2.5admins`. Only `podcast-folder` and `shows`, and in each show `url` and `folder`, are required. Anything else that's missing uses its default. A misspelled setting name gets a warning, and other mistakes in the file get a message saying what to fix.
 
 ### Settings for all shows
 | Field | Type | Description |
@@ -106,13 +106,16 @@ Episodes are saved in `podcast-folder` + each show's `folder`, so the example ab
 | `notify` | list | Where to send a message after a run. See [Notifications](#notifications) |
 | `notify-when` | string | `changes` = when anything downloaded or failed, `failures` = only when something failed, `always` = after every run. Default `changes` |
 | `podcast-folder` | string | The folder all shows go in. Each show is saved in its `folder` inside it. The older name `download-path` still works here |
+| `filename-format` | string | How episodes are named, for example `{show} - {date} - {episode} - {title}`. See [Filenames](#filenames). Empty or missing = the episode title as it is, or the URL's filename with `title-as-filename`: `0` |
 
 ### Settings for each show
 | Field | Type | Description |
 |---|---|---|
 | `url` | string | URL of the podcast RSS feed. The older name `show-url` still works |
 | `folder` | string | The show's folder inside `podcast-folder`. It's also how `--show` finds the show |
-| `title-as-filename` | integer | `1` = name files after the episode title, `0` = use the original filename from the URL |
+| `name` | string | Optional. The show's name in filenames and messages, for example `"Linux Unplugged"` for a feed titled "LINUX Unplugged". Default: the feed's title |
+| `filename-format` | string | Optional. A `filename-format` for this show only |
+| `title-as-filename` | integer | Optional. Without a `filename-format`: `1` = name files after the episode title, `0` = use the original filename from the URL. With one, it's only used to find files saved under the older names. Default `1` |
 | `enabled` | integer | Optional. `0` = skip this show without removing it from the config. Default `1` |
 | `max-episodes` | integer | Optional. Only download the newest this many episodes. Default `0` = all |
 | `skip-episodes` | list | Optional. Episodes never to download, by title or filename, for example `["2.5 Admins 100: Episode Title"]` or `["2.5 Admins 100 Episode Title.mp3"]`. Matches the whole title, ignoring case |
@@ -148,9 +151,40 @@ A Voidy bot works too. Use the bot's room URL and add its token, which is sent a
 Long reports are cut to fit each service's message limit. A dry run sends nothing. Keep tokens and webhook URLs in `config.json`, which git ignores, and never in `config.json.example`.
 
 ## Filenames
-Characters that aren't allowed in Windows filenames are removed on every system, so names stay the same wherever you run it. For example, `2.5 Admins 214: No VLANs` is saved as `2.5 Admins 214 No VLANs.mp3`. Line breaks, trailing spaces and trailing dots are removed too.
+`filename-format` sets how episodes are named. With `"{show} - {date} - {episode} - {title}"`:
 
-When two episodes share a title, later ones are numbered, like `Bonus (2).mp3`. Long titles are shortened to fit filename and path limits. Downloaded files are dated by the episode's release date, so sorting by date matches release order.
+```
+2.5 Admins - 2026-10-22 - 322 - Internet Defrigeration.mp3
+Ubuntu Podcast - 2021-09-30 - S14E30 - Final Episode Recorded.mp3
+Late Night Linux - 2026-10-20 - 408.mp3
+Self-Hosted - 2019-08-27 - Coming Soon.mp3
+```
+
+| Part | What it is |
+|---|---|
+| `{show}` | The show's `name`, or the feed's title |
+| `{date}` | The release date, like `2026-10-22`, so sorting by name is release order |
+| `{episode}` | The episode number, padded to 3 digits like `007`, or `S14E30` for shows with seasons. It comes from the feed's episode tag, or else from the title, like `214:`, `Episode 408` or `S14E30` |
+| `{title}` | The episode title, without the show name and number at its start, which the other parts already give |
+
+A part that's empty is left out with the separator next to it, so a title that's only "Episode 408" gives `Late Night Linux - 2026-10-20 - 408.mp3`, never `- -`. A long title is shortened, and the rest of the name stays whole.
+
+At the start of each run, a format with an unknown part, or without `{date}`, `{episode}` or `{title}`, stops the run with a message saying what to fix. When a show's newest episode has no number although most do, which usually means the show changed how it writes titles, a `⚠` warning says so before anything downloads.
+
+Without a `filename-format`, episodes are named after their title as it is: `2.5 Admins 214: No VLANs` becomes `2.5 Admins 214 No VLANs.mp3`.
+
+Either way, characters that aren't allowed in Windows filenames are removed on every system, so names stay the same wherever you run it. Line breaks, trailing spaces and trailing dots are removed too. When two episodes would get the same name, later ones are numbered, like `Bonus (2).mp3`. Names are kept within filename and path limits.
+
+Downloaded files are dated by the episode's release date, so sorting by date matches release order. On Windows the created date is set too, where the drive allows it.
+
+### Renamed episodes are never downloaded again
+Each show folder has a small `.podfetch.json` that records each episode's ID from the feed (its `guid`) and the file it's saved as. So when you change `filename-format`, or a show edits an episode title, the next run renames the files instead of downloading them again:
+
+```
+↻ Renamed 2.5 Admins › 2.5 Admins 214 No VLANs.mp3 → 2.5 Admins - 2024-09-12 - 214 - No VLANs.mp3
+```
+
+Files saved before `.podfetch.json` existed are found by their older name and renamed the same way. Use `--dry-run` first to see every rename without changing anything. Deleting `.podfetch.json` is safe: it's rebuilt from the files that have the right name.
 
 ## Checking your library
 `--check` compares each show's folder with its feed and lists:

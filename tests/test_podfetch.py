@@ -70,9 +70,14 @@ class PodfetchTestCase(unittest.TestCase):
         podfetch.activeDownloads.clear()
         podfetch.progressLength = 0
         podfetch.planNotes.clear()
+        podfetch.nameWarnings.clear()
 
     def tearDown(self):
         shutil.rmtree(self.tempDir, ignore_errors=True)
+
+    def episodeFiles(self):
+        # The show folder's episodes, without the record of episode IDs
+        return sorted(name for name in os.listdir(self.downloadDir) if name != podfetch.stateFileName)
 
     def quietly(self, function, *args, **kwargs):
         # Run without printing to the test output
@@ -494,6 +499,62 @@ class PickShowsTests(unittest.TestCase):
             podfetch.pickShows(self.shows, ['nope'])
 
 
+class NameFormatTests(PodfetchTestCase):
+    def test_split_titles_from_real_feeds(self):
+        cases = [
+            (('2.5 Admins 214: No VLANs', ['2.5 Admins']), ('214', 'No VLANs')),
+            (('Late Night Linux – Episode 408', ['Late Night Linux']), ('408', '')),
+            (('Late Night Linux Extra – Episode 01', ['Linux Dev Time']), ('001', '')),
+            (('33: Hiatus', ['Choose Linux']), ('033', 'Hiatus')),
+            (('Linux Action News 299', ['Linux Action News']), ('299', '')),
+            (('S14E30 – Final Episode Recorded', ['Ubuntu Podcast']), ('S14E30', 'Final Episode Recorded')),
+            (('Episode 88: Well, Actually', ['User Error']), ('088', 'Well, Actually')),
+            (('Episode 1: Too Much Choice | LU1', ['LINUX Unplugged']), ('001', 'Too Much Choice')),
+            (('Episode 2: Edge of Failure | LINUX Unplugged 2', ['LINUX Unplugged']), ('002', 'Edge of Failure')),
+            (('Episode 7: Part | Two 3', ['LINUX Unplugged']), ('007', 'Part | Two 3')),
+            (('Self-Hosted Coming Soon', ['Self-Hosted']), ('', 'Coming Soon')),
+            (('5 Ways to Back Up', ['Show']), ('', '5 Ways to Back Up')),
+            (('2.5 Adminsitis', ['2.5 Admins']), ('', '2.5 Adminsitis')),
+        ]
+        for (title, prefixes), expected in cases:
+            self.assertEqual(podfetch.splitTitle(title, prefixes, None, None), expected, title)
+
+    def test_tags_win_over_the_title(self):
+        self.assertEqual(podfetch.splitTitle('Shonky WonKey Donkey', ['Linux Matters'], '92', None), ('092', 'Shonky WonKey Donkey'))
+        self.assertEqual(podfetch.splitTitle('690: The S in PHP', [], '690', None), ('690', 'The S in PHP'))
+        self.assertEqual(podfetch.splitTitle('Pilot', [], '1', '2'), ('S02E01', 'Pilot'))
+
+    def test_empty_parts_left_out(self):
+        values = {'show': 'Late Night Linux', 'date': '2026-10-20', 'episode': '408', 'title': ''}
+        self.assertEqual(podfetch.renderName('{show} - {date} - {episode} - {title}', values), 'Late Night Linux - 2026-10-20 - 408')
+        values = {'show': 'Self-Hosted', 'date': '2019-08-27', 'episode': '', 'title': 'Coming Soon'}
+        self.assertEqual(podfetch.renderName('{show} - {date} - {episode} - {title}', values), 'Self-Hosted - 2019-08-27 - Coming Soon')
+        self.assertEqual(podfetch.renderName('{episode} - {title} ({date})', dict(values, date='')), 'Coming Soon')
+
+    def test_long_title_shortened_not_the_rest(self):
+        values = {'show': 'Show', 'date': '2026-10-20', 'episode': '001', 'title': 'Long ' * 60}
+        name = podfetch.formatName('{title} ({date})', values, 50)
+        self.assertLessEqual(len(name), 50)
+        self.assertTrue(name.endswith(' (2026-10-20)'), name)
+
+    def test_check_format(self):
+        self.assertIsNone(podfetch.checkNameFormat('{show} - {date} - {episode} - {title}'))
+        self.assertIn('{name}', podfetch.checkNameFormat('{name} - {date}'))
+        self.assertIn('same name', podfetch.checkNameFormat('{show}'))
+
+    def test_build_with_format(self):
+        root = xmlreader.fromstring(makeFeed([
+            ('Test 2: Again', 'https://x/b.mp3', 'Fri, 23 Oct 2026 08:15:00 -0400'),
+            ('Test 1: First', 'https://x/a.mp3', 'Thu, 22 Oct 2026 23:30:00 -0400'),
+        ]))
+        episodes = self.quietly(podfetch.buildEpisodes, root, self.tempDir, 1, '{show} - {date} - {episode} - {title}', 'My Show')
+        self.assertEqual([episode['filename'] for episode in episodes],
+                         ['My Show - 2026-10-22 - 001 - First.mp3', 'My Show - 2026-10-23 - 002 - Again.mp3'],
+                         "the date is the feed's own, not shifted to another time zone")
+        self.assertEqual([episode['legacyFilename'] for episode in episodes], ['Test 1 First.mp3', 'Test 2 Again.mp3'])
+        self.assertEqual(episodes[0]['guid'], 'https://x/a.mp3', 'without a guid, the audio URL is the ID')
+
+
 class RunTests(PodfetchTestCase):
     # Whole runs through main(), with the network faked
 
@@ -523,9 +584,62 @@ class RunTests(PodfetchTestCase):
                 'podcast-folder': self.tempDir,
                 'shows': [{'url': 'https://x/feed', 'folder': 'episodes', 'title-as-filename': 1, **show}]}
 
+    def writeConfig(self, config):
+        path = os.path.join(self.tempDir, 'config.json')
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(config, f)
+        return path
+
+    def test_format_renames_existing_files_and_records_them(self):
+        os.makedirs(self.downloadDir)
+        for name in ['Ep 1 Older.mp3', 'Ep 2 Newer.mp3']:
+            with open(os.path.join(self.downloadDir, name), 'wb') as f:
+                f.write(b'kept')
+        config = self.config(name='Show')
+        config['filename-format'] = '{show} - {date} - {episode} - {title}'
+        with mock.patch.object(podfetch.requests, 'get', side_effect=self.fakeGet) as get:
+            self.assertEqual(self.quietly(podfetch.main, ['--config', self.writeConfig(config)]), 0)
+        self.assertEqual(get.call_count, 1, 'only the feed is fetched; nothing downloads again')
+        newer = 'Show - {0} - 002 - Newer.mp3'.format(time.strftime('%Y-%m-%d', time.gmtime(time.time() - 86400)))
+        self.assertEqual(self.episodeFiles(), ['Show - 2026-01-01 - 001 - Older.mp3', newer])
+        self.assertEqual(podfetch.totals['renamed'], 2)
+        with open(os.path.join(self.downloadDir, 'Show - 2026-01-01 - 001 - Older.mp3'), 'rb') as f:
+            self.assertEqual(f.read(), b'kept')
+        self.assertEqual(podfetch.loadState(self.downloadDir)['https://x/1.mp3']['file'], 'Show - 2026-01-01 - 001 - Older.mp3')
+
+        # The show retitles an episode: it's found by its ID and renamed, not downloaded again
+        self.feed = self.feed.replace(b'Ep 1: Older', b'Ep 1: Oldest')
+        podfetch.totals['renamed'] = 0
+        with mock.patch.object(podfetch.requests, 'get', side_effect=self.fakeGet) as get:
+            self.quietly(podfetch.main, ['--config', self.writeConfig(config)])
+        self.assertEqual(get.call_count, 1)
+        self.assertIn('Show - 2026-01-01 - 001 - Oldest.mp3', self.episodeFiles())
+        self.assertEqual(podfetch.totals['renamed'], 1)
+
+    def test_downloads_are_recorded(self):
+        self.run_main(self.config())
+        self.assertEqual(podfetch.loadState(self.downloadDir)['https://x/2.mp3']['file'], 'Ep 2 Newer.mp3')
+
+    def test_dry_run_renames_nothing(self):
+        os.makedirs(self.downloadDir)
+        open(os.path.join(self.downloadDir, 'Ep 1 Older.mp3'), 'wb').close()
+        config = self.config()
+        config['filename-format'] = '{date} - {title}'
+        self.run_main(config, '--dry-run')
+        self.assertEqual(os.listdir(self.downloadDir), ['Ep 1 Older.mp3'])
+        self.assertEqual(podfetch.totals['renamed'], 1)
+        self.assertEqual(podfetch.totals['downloaded'], 1)
+
+    def test_bad_format_stops_before_anything(self):
+        config = self.config()
+        config['filename-format'] = '{show} - {ep}'
+        with self.assertRaises(SystemExit) as stop:
+            self.run_main(config)
+        self.assertIn('{ep}', str(stop.exception.code))
+
     def test_download_names_and_dates_files(self):
         self.assertEqual(self.run_main(self.config()), 0)
-        self.assertEqual(sorted(os.listdir(self.downloadDir)), ['Ep 1 Older.mp3', 'Ep 2 Newer.mp3'])
+        self.assertEqual(self.episodeFiles(), ['Ep 1 Older.mp3', 'Ep 2 Newer.mp3'])
         self.assertEqual(os.path.getmtime(os.path.join(self.downloadDir, 'Ep 1 Older.mp3')),
                          podfetch.getReleaseTime('Thu, 01 Jan 2026 12:00:00 +0000'))
         self.assertEqual(os.listdir(os.path.join(self.tempDir, 'parts')), [], 'no .part files left behind')
@@ -553,7 +667,7 @@ class RunTests(PodfetchTestCase):
 
     def test_parallel_downloads_everything(self):
         output = self.run_text(json.dumps({**self.config(), 'parallel': 2}))
-        self.assertEqual(sorted(os.listdir(self.downloadDir)), ['Ep 1 Older.mp3', 'Ep 2 Newer.mp3'])
+        self.assertEqual(self.episodeFiles(), ['Ep 1 Older.mp3', 'Ep 2 Newer.mp3'])
         self.assertEqual(os.listdir(os.path.join(self.tempDir, 'parts')), [], 'no .part files left behind')
         self.assertIn('               ✔ Test › Ep 2 Newer.mp3 · 0.0 MB', output.splitlines(), 'finished lines line up under the counter')
         self.assertNotIn('no new episode', output, 'notes from other runs never carry over')
@@ -626,7 +740,7 @@ class RunTests(PodfetchTestCase):
 
     def test_skip_episodes(self):
         self.run_main(self.config(**{'skip-episodes': ['Ep 1: Older']}))
-        self.assertEqual(os.listdir(self.downloadDir), ['Ep 2 Newer.mp3'])
+        self.assertEqual(self.episodeFiles(), ['Ep 2 Newer.mp3'])
 
     def writeConfigText(self, text):
         path = os.path.join(self.tempDir, 'config.json')
@@ -658,7 +772,7 @@ class RunTests(PodfetchTestCase):
         self.feed = makeFeed([('Old', 'https://x/old.mp3', 'Thu, 01 Jan 2026 12:00:00 +0000')])
         text = self.inactiveConfigText()
         output = self.run_text(text)
-        self.assertEqual(os.listdir(self.downloadDir), ['Old.mp3'])
+        self.assertEqual(self.episodeFiles(), ['Old.mp3'])
         self.assertIn('  └─ Test  1 ep    · no new episode since 2026-01-01', output, 'the overview says why an ended show still downloads')
         with open(os.path.join(self.tempDir, 'config.json'), encoding='utf-8') as f:
             self.assertEqual(f.read(), text, 'not disabled while an episode was missing')
@@ -711,8 +825,8 @@ class RunTests(PodfetchTestCase):
         config['random-show'] = 1
         config['shows'].append({'url': 'https://x/feed', 'folder': 'other', 'title-as-filename': 1})
         self.assertEqual(self.run_main(config), 0)
-        self.assertEqual(sorted(os.listdir(self.downloadDir)), ['Ep 1 Older.mp3', 'Ep 2 Newer.mp3'])
-        self.assertEqual(sorted(os.listdir(otherDir)), ['Ep 1 Older.mp3', 'Ep 2 Newer.mp3'])
+        self.assertEqual(self.episodeFiles(), ['Ep 1 Older.mp3', 'Ep 2 Newer.mp3'])
+        self.assertEqual(sorted(set(os.listdir(otherDir)) - {podfetch.stateFileName}), ['Ep 1 Older.mp3', 'Ep 2 Newer.mp3'])
 
     def test_failed_download_sets_exit_code(self):
         def get(url, **kwargs):

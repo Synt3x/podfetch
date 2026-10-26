@@ -39,6 +39,8 @@ maxPathLength = 259
 maxNameBytes = 240
 
 # Extensions for common podcast file types, used when the URL has none
+itunesNamespace = '{http://www.itunes.com/dtds/podcast-1.0.dtd}'
+
 typeExtensions = {
     'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a',
     'audio/aac': 'aac', 'audio/ogg': 'ogg', 'audio/opus': 'opus', 'video/mp4': 'mp4',
@@ -61,6 +63,7 @@ skipInactiveDays = 0
 debug = False
 parallel = 1
 dryRun = False
+nameFormat = ''
 
 # With "parallel" above 1, several downloads update the counts and write messages at once
 countLock = threading.Lock()
@@ -77,6 +80,9 @@ colorPattern = re.compile(r'\033\[[0-9;]*m')
 # Notes on shows for the overview before downloading, like an ended show still catching up, by folder name
 planNotes = {}
 
+# Shows whose episode names don't look right any more, said at the start of the run
+nameWarnings = []
+
 # The download in progress for the progress bar, as (name, bytes done, total bytes); how many characters
 # of progress bar are on screen, so it can be cleared; and when it was last drawn
 activeDownloads = {}
@@ -87,7 +93,7 @@ lastProgressDraw = 0.0
 configPath = os.path.join(scriptDir, 'config.json')
 
 # Running count of what happened, for the summary and notifications at the end
-totals = {'downloaded': 0, 'failed': 0, 'skipped': 0, 'failedShows': 0}
+totals = {'downloaded': 0, 'failed': 0, 'skipped': 0, 'failedShows': 0, 'renamed': 0}
 downloadedNames = []
 failedNames = []
 wouldDownload = {}
@@ -105,7 +111,7 @@ def getExtension(urlFilename, enclosureType):
     guessed = mimetypes.guess_extension(enclosureType) if enclosureType else None
     return guessed.lstrip('.') if guessed else ''
 
-def cleanName(name, maxLength):
+def tidyName(name):
     # Turn line breaks, tabs and other control characters into spaces
     name = ''.join(' ' if ord(char) < 32 else char for char in name)
 
@@ -114,7 +120,13 @@ def cleanName(name, maxLength):
         name = name.replace(char,'')
 
     # Collapse any runs of spaces left behind
-    name = re.sub(' {2,}', ' ', name)
+    return re.sub(' {2,}', ' ', name)
+
+def nameFits(name, maxLength):
+    return len(name) <= maxLength and len(name.encode('utf-8')) <= maxNameBytes
+
+def cleanName(name, maxLength):
+    name = tidyName(name)
 
     # Keep the name short enough for Windows, then drop trailing dots and spaces, which Windows doesn't allow
     name = name[:maxLength]
@@ -126,6 +138,142 @@ def cleanName(name, maxLength):
     if name.upper() in reservedNames:
         name = name + '_'
     return name
+
+def splitTitle(title, prefixes, episodeTag, seasonTag):
+    # Split an episode title like "2.5 Admins 214: No VLANs" into its episode label ("214", or "S14E30"
+    # with seasons) and the title on its own ("No VLANs"). The feed's episode and season tags win over
+    # numbers in the title. Either part can come back empty
+    text = ' '.join((title or '').split())
+    separators = ' :–—-|'
+    # Drop the show's name from the front, but only as whole words
+    for prefix in prefixes:
+        if prefix and text.lower().startswith(prefix.lower()) and not text[len(prefix):len(prefix) + 1].isalnum():
+            text = text[len(prefix):].lstrip(separators)
+            break
+
+    season = number = None
+    end = r'(?:\s*[:–—|-]\s*|$)'
+    # "Episode 88: …" or "Ep 88: …", also after another name like "Late Night Linux Extra – Episode 01"
+    match = re.match(r'(?:.*?\s[–—-]\s+)?(?:Episode|Ep\.?)\s*(\d+)' + end, text, re.I)
+    if match:
+        number = match.group(1)
+    else:
+        match = re.match(r'S(\d+)\s*E(\d+)' + end, text, re.I)
+        if match:
+            season, number = match.groups()
+        else:
+            # A number on its own at the start, like "214: …" or "Linux Action News 299"
+            match = re.match(r'(\d+)' + end, text)
+            if match:
+                number = match.group(1)
+    if match:
+        text = text[match.end():]
+    if (episodeTag or '').strip().isdigit():
+        number = episodeTag.strip()
+    # Drop an ending like "| LUP 240" or "| LINUX Unplugged 8", which only repeats the episode number
+    ending = re.search(r'\s*\|[^|]*?(\d+)$', text)
+    if ending and number is not None and int(ending.group(1)) == int(number):
+        text = text[:ending.start()]
+    text = text.strip(separators)
+
+    if (seasonTag or '').strip().isdigit():
+        season = seasonTag.strip()
+    if number is None:
+        label = ''
+    elif season is not None:
+        label = 'S{0:02d}E{1:02d}'.format(int(season), int(number))
+    else:
+        label = '{0:03d}'.format(int(number))
+    return label, text
+
+nameFields = ['show', 'date', 'episode', 'title']
+
+def checkNameFormat(nameFormat):
+    # What's wrong with a "filename-format", or None when it works
+    used = re.findall(r'\{([^{}]*)\}', nameFormat)
+    unknown = [field for field in used if field not in nameFields]
+    if unknown:
+        return 'unknown {0} · use {1}'.format(', '.join('{' + field + '}' for field in unknown), ', '.join('{' + field + '}' for field in nameFields))
+    if not set(used) & {'date', 'episode', 'title'}:
+        return 'needs {date}, {episode} or {title}, or every episode gets the same name'
+    return None
+
+def renderName(nameFormat, values):
+    # Fill in a "filename-format" like "{show} - {date} - {episode} - {title}". An empty part is left out
+    # along with the separator next to it, so there's never a "- -" or "()"
+    text = nameFormat
+    for field in nameFields:
+        text = text.replace('{' + field + '}', values.get(field) or '\0')
+    text = re.sub(r'\s*\(\s*\0\s*\)', '\0', text)
+    text = re.sub(r'\s*[-–—_,]\s*\0', '', text)
+    text = re.sub(r'\0\s*[-–—_,]\s*', '', text)
+    return text.replace('\0', '').strip()
+
+def formatName(nameFormat, values, maxLength):
+    # The filename for an episode, without extension. A long title is shortened, so the rest of the name,
+    # like the date, always stays whole
+    title = tidyName(values.get('title') or '')
+    while True:
+        name = tidyName(renderName(nameFormat, dict(values, title=title)))
+        if nameFits(name, maxLength) or not title:
+            return cleanName(name, maxLength)
+        title = title[:-1].rstrip()
+
+def setFileDates(filepath, releaseTime):
+    # Date the file by the episode's release, so sorting by date matches release order. On Windows the
+    # created date is set too, where the drive allows it
+    if not releaseTime:
+        return
+    os.utime(filepath, (releaseTime, releaseTime))
+    if os.name != 'nt':
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        # FILE_WRITE_ATTRIBUTES, shared with everyone, OPEN_EXISTING
+        handle = kernel32.CreateFileW(os.path.abspath(filepath), 0x100, 7, None, 3, 0x80, None)
+        if handle in (None, wintypes.HANDLE(-1).value):
+            return
+        try:
+            # FILETIME counts 100 ns steps from 1601
+            ticks = int(releaseTime * 10000000) + 116444736000000000
+            created = wintypes.FILETIME(ticks & 0xFFFFFFFF, ticks >> 32)
+            kernel32.SetFileTime(handle, ctypes.byref(created), None, None)
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        pass
+
+# Each show folder has this file, recording which feed episode (by its ID, the RSS "guid") was saved under
+# which filename. It's how renamed episodes and changed formats are recognised without downloading again
+stateFileName = '.podfetch.json'
+
+def loadState(downloadDir):
+    try:
+        with open(os.path.join(downloadDir, stateFileName), 'r', encoding='utf-8') as f:
+            state = json.load(f)
+        return state if isinstance(state, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        log(paint('⚠ ', 'yellow') + 'Could not read {0}: {1} · it will be rebuilt'.format(os.path.join(downloadDir, stateFileName), e))
+        return {}
+
+def saveState(downloadDir, state):
+    # Write to a temporary file and swap it in, so a crash never leaves half a file
+    path = os.path.join(downloadDir, stateFileName)
+    try:
+        with open(path + '.tmp', 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, indent=1, sort_keys=True)
+        os.replace(path + '.tmp', path)
+    except OSError as e:
+        log(paint('⚠ ', 'yellow') + 'Could not save {0}: {1}'.format(path, e))
+
+def recordEpisode(state, episode):
+    state[episode['guid']] = {'file': episode['filename'], 'date': episode['date']}
 
 def paint(text, *styles):
     # Colour text for the terminal, like paint('✔', 'green'); plain text when colour is off
@@ -293,10 +441,7 @@ def downloadAttempts(episodeUrl, filename, filepath, releaseTime, partialPath, c
                             if delay > 0:
                                 time.sleep(delay)
             shutil.move(partialPath, filepath)
-
-            # Date the file by the episode's release, so sorting by date matches release order
-            if releaseTime:
-                os.utime(filepath, (releaseTime, releaseTime))
+            setFileDates(filepath, releaseTime)
             return True
         except requests.RequestException as e:
             log(paint('✖ ', 'red') + 'Failed to download {0}: {1}'.format(filename, e))
@@ -323,8 +468,10 @@ def fetchFeed(feedUrl):
     # Parse the raw bytes, so the XML declaration decides the text encoding instead of a guess
     return xmlreader.fromstring(feedResponse.content)
 
-def buildEpisodes(feedRoot, downloadDir, useTitle):
-    # Work out each episode's filename. Returns a list of episodes, oldest first
+def buildEpisodes(feedRoot, downloadDir, useTitle, nameFormat='', showLabel=''):
+    # Work out each episode's filename. Returns a list of episodes, oldest first.
+    # With a "filename-format", names come from it; "legacyFilename" is always the older title or URL name,
+    # so files saved that way are found and renamed instead of downloaded again
 
     # On Windows, keep names short enough that both the download path and the .part path fit within the
     # path limit, leaving room for the separator, a " (99)" number for repeated titles and a ".xxxx" extension
@@ -337,7 +484,13 @@ def buildEpisodes(feedRoot, downloadDir, useTitle):
     # so a repeated title gets the same name no matter which order episodes download in
     episodes = []
     usedNames = set()
-    for episode in reversed(feedRoot.findall('.//channel/item')):
+    usedLegacyNames = set()
+    items = feedRoot.findall('.//channel/item')
+    feedTitle = ' '.join((feedRoot.findtext('channel/title') or '').split())
+    # Season tags only count when the feed has more than one season; many feeds put every episode in season 1
+    seasons = {(item.findtext(itunesNamespace + 'season') or '').strip() for item in items} - {''}
+    useSeasons = len(seasons) > 1
+    for episode in reversed(items):
         episodeTitle = episode.findtext('title')
         enclosure = episode.find('enclosure')
 
@@ -358,25 +511,43 @@ def buildEpisodes(feedRoot, downloadDir, useTitle):
             name = cleanName(urlFilename.rsplit('.',1)[0] if '.' in urlFilename else urlFilename, nameLength)
         else:
             name = cleanName(episodeTitle, nameLength)
-        name = name or 'episode'
+        legacyFilename = uniqueFilename(name or 'episode', extension, usedLegacyNames)
 
-        # Number repeated names, so a second episode with the same title isn't taken as already downloaded.
-        # Windows ignores case in filenames, so compare in lower case
-        uniqueName = name
-        count = 2
-        while uniqueName.lower() in usedNames:
-            uniqueName = '{0} ({1})'.format(name, count)
-            count += 1
-        usedNames.add(uniqueName.lower())
-
-        filename = '{0}.{1}'.format(uniqueName, extension) if extension else uniqueName
+        # The feed's own date, as written, so it doesn't shift with the time zone
+        try:
+            date = email.utils.parsedate_to_datetime(episode.findtext('pubDate')).strftime('%Y-%m-%d')
+        except (TypeError, ValueError):
+            date = ''
+        label, shortTitle = splitTitle(episodeTitle, [feedTitle, showLabel], episode.findtext(itunesNamespace + 'episode'),
+                                       episode.findtext(itunesNamespace + 'season') if useSeasons else None)
+        if nameFormat:
+            name = formatName(nameFormat, {'show': showLabel or feedTitle, 'date': date, 'episode': label, 'title': shortTitle}, nameLength)
+            filename = uniqueFilename(name or 'episode', extension, usedNames)
+        else:
+            filename = legacyFilename
         episodes.append({
             'title': (episodeTitle or '').strip(),
             'filename': filename,
+            'legacyFilename': legacyFilename,
+            'episode': label,
+            'date': date,
+            # The episode's ID; a feed without them falls back to the audio URL
+            'guid': (episode.findtext('guid') or '').strip() or episodeUrl,
             'url': episodeUrl,
             'releaseTime': getReleaseTime(episode.findtext('pubDate')),
         })
     return episodes
+
+def uniqueFilename(name, extension, usedNames):
+    # Number repeated names, so a second episode with the same title isn't taken as already downloaded.
+    # Windows ignores case in filenames, so compare in lower case
+    uniqueName = name
+    count = 2
+    while uniqueName.lower() in usedNames:
+        uniqueName = '{0} ({1})'.format(name, count)
+        count += 1
+    usedNames.add(uniqueName.lower())
+    return '{0}.{1}'.format(uniqueName, extension) if extension else uniqueName
 
 def selectEpisodes(episodes, skipEpisodes, maxEpisodes):
     # Drop episodes listed in "skip-episodes", then keep only the newest "max-episodes" (0 = all).
@@ -457,18 +628,68 @@ def planPodcast(show, redownload, checkInactive=True):
     downloadDir = show['download-path']
     feedRoot = fetchFeed(show['url'])
     feedTitle = ' '.join((feedRoot.findtext('channel/title') or '').split())
-    if feedTitle:
-        showTitles[showName(show)] = feedTitle
-    allEpisodes = buildEpisodes(feedRoot, downloadDir, show['title-as-filename'])
+    # "name" on a show replaces the feed's title, in filenames and messages
+    label = show.get('name') or feedTitle
+    if label:
+        showTitles[showName(show)] = label
+    showFormat = show.get('filename-format', nameFormat)
+    allEpisodes = buildEpisodes(feedRoot, downloadDir, show.get('title-as-filename', 1), showFormat, show.get('name', ''))
+
+    # Check the names still come out right: a newest episode without a number, when most have one,
+    # usually means the show changed how it writes titles
+    if '{episode}' in showFormat and allEpisodes and not allEpisodes[-1]['episode']:
+        if 2 * sum(1 for episode in allEpisodes if episode['episode']) > len(allEpisodes):
+            nameWarnings.append('{0}: newest episode "{1}" has no episode number, so it\'s saved as {2}'.format(
+                displayName(showName(show)), allEpisodes[-1]['title'], allEpisodes[-1]['filename']))
 
     episodes = selectEpisodes(allEpisodes, show.get('skip-episodes', []), show.get('max-episodes', 0))
+
+    # Episodes already here: under today's name, or under an older one (from the record of episode IDs,
+    # or the title-or-URL naming), in which case they're renamed. Everything else needs downloading
+    state = loadState(downloadDir)
+    stateChanged = False
+    needed = []
+    for episode in episodes:
+        filepath = os.path.join(downloadDir, episode['filename'])
+        if redownload:
+            needed.append(episode)
+            continue
+        if os.path.isfile(filepath):
+            if state.get(episode['guid'], {}).get('file') != episode['filename'] and not dryRun:
+                recordEpisode(state, episode)
+                setFileDates(filepath, episode['releaseTime'])
+                stateChanged = True
+            totals['skipped'] += 1
+            if not hideSkipped:
+                log('File {0} has already been downloaded'.format(episode['filename']))
+            continue
+        olderNames = [state.get(episode['guid'], {}).get('file'), episode['legacyFilename']]
+        source = next((name for name in olderNames if name and name != episode['filename'] and os.path.isfile(os.path.join(downloadDir, name))), None)
+        if source is None:
+            needed.append(episode)
+            continue
+        showLabel = paint(displayName(showName(show)), 'cyan')
+        if dryRun:
+            log('Would rename {0} › {1} {2} {3}'.format(showLabel, source, paint('→', 'dim'), episode['filename']))
+        else:
+            try:
+                os.rename(os.path.join(downloadDir, source), filepath)
+            except OSError as e:
+                log(paint('✖ ', 'red') + 'Could not rename {0} to {1}: {2}'.format(source, episode['filename'], e))
+                continue
+            setFileDates(filepath, episode['releaseTime'])
+            recordEpisode(state, episode)
+            stateChanged = True
+            log('{0} Renamed {1} › {2} {3} {4}'.format(paint('↻', 'cyan'), showLabel, source, paint('→', 'dim'), episode['filename']))
+        totals['renamed'] += 1
+    if stateChanged:
+        saveState(downloadDir, state)
 
     # "skip-inactive-days": skip shows with no new episode in that many days, unless picked with --show.
     # Only once every episode is downloaded, though: a show that ended still gets the ones you're missing
     if checkInactive and isInactive(allEpisodes, skipInactiveDays):
         newest = time.strftime('%Y-%m-%d', time.localtime(max(episode['releaseTime'] for episode in allEpisodes if episode['releaseTime'])))
-        missing = sum(1 for episode in episodes if not os.path.isfile(os.path.join(downloadDir, episode['filename'])))
-        if not missing and not redownload:
+        if not needed and not redownload:
             # Nothing left to get, so turn the show off in config.json; later runs don't read its feed again
             name = paint(displayName(showName(show)), 'cyan')
             reason = 'all {0} episodes downloaded, no new episode since {1}'.format(len(episodes), newest)
@@ -488,25 +709,18 @@ def planPodcast(show, redownload, checkInactive=True):
 
     # The list is oldest first; flip it back unless downloading in release order
     if not oldestFirst:
-        episodes.reverse()
+        needed.reverse()
 
+    # Download what's missing, or everything again if redownload is on (overwrites the existing files)
     planned = []
-    for episode in episodes:
-        filename = episode['filename']
-        filepath = os.path.join(downloadDir, filename)
-
-        # Download if missing, or again if redownload is on (overwrites the existing file)
-        if redownload or not os.path.isfile(filepath):
-            if dryRun:
-                log('Would download {0} › {1}'.format(paint(displayName(showName(show)), 'cyan'), filename))
-                totals['downloaded'] += 1
-                wouldDownload[showName(show)] = wouldDownload.get(showName(show), 0) + 1
-                continue
-            planned.append({'show': showName(show), 'episode': episode, 'filepath': filepath})
-        else:
-            totals['skipped'] += 1
-            if not hideSkipped:
-                log('File {0} has already been downloaded'.format(filename))
+    for episode in needed:
+        if dryRun:
+            log('Would download {0} › {1}'.format(paint(displayName(showName(show)), 'cyan'), episode['filename']))
+            totals['downloaded'] += 1
+            wouldDownload[showName(show)] = wouldDownload.get(showName(show), 0) + 1
+            continue
+        planned.append({'show': showName(show), 'episode': episode, 'filepath': os.path.join(downloadDir, episode['filename']),
+                        'state': state, 'downloadDir': downloadDir})
     return planned
 
 def downloadPlanned(job, number, total):
@@ -536,6 +750,10 @@ def downloadPlanned(job, number, total):
             size = os.path.getsize(job['filepath'])
             totals['downloaded'] += 1
             downloadedNames.append((job['show'], filename, size))
+            # Note the episode's ID, so later runs know this file even if its name changes
+            if 'state' in job:
+                recordEpisode(job['state'], episode)
+                saveState(job['downloadDir'], job['state'])
         else:
             totals['failed'] += 1
             failedNames.append((job['show'], filename))
@@ -604,9 +822,10 @@ def checkShow(show, listLimit=20):
     # Report how a show's folder compares with its feed, without changing anything
     downloadDir = show['download-path']
     feedRoot = fetchFeed(show['url'])
-    episodes = selectEpisodes(buildEpisodes(feedRoot, downloadDir, show['title-as-filename']),
+    episodes = selectEpisodes(buildEpisodes(feedRoot, downloadDir, show.get('title-as-filename', 1), show.get('filename-format', nameFormat), show.get('name', '')),
                               show.get('skip-episodes', []), show.get('max-episodes', 0))
-    files = sorted(f for f in os.listdir(downloadDir) if os.path.isfile(os.path.join(downloadDir, f))) if os.path.isdir(downloadDir) else []
+    # The record of episode IDs isn't an episode
+    files = sorted(f for f in os.listdir(downloadDir) if os.path.isfile(os.path.join(downloadDir, f)) and not f.startswith(stateFileName)) if os.path.isdir(downloadDir) else []
 
     expected = {episode['filename'].lower(): episode['filename'] for episode in episodes}
     present = {f.lower() for f in files}
@@ -703,6 +922,8 @@ def summaryLines():
     rows = []
     if dryRun:
         heading = '◌ Dry run: would download {0}'.format(totals['downloaded'])
+        if totals['renamed']:
+            heading += ', rename {0}'.format(totals['renamed'])
         rows = [(displayName(show), '{0} ep'.format(count), '', '') for show, count in wouldDownload.items()]
     else:
         attempted = totals['downloaded'] + totals['failed']
@@ -713,6 +934,8 @@ def summaryLines():
             heading = '{0} Nothing new'.format(mark)
         if totals['failed']:
             heading += ' · {0} failed'.format(totals['failed'])
+        if totals['renamed']:
+            heading += ' · {0} renamed'.format(totals['renamed'])
         rows = [(displayName(show), '{0} ep'.format(downloaded), formatSize(size), paint('✖ {0} failed'.format(failed), 'red') if failed else '')
                 for show, (downloaded, size, failed) in showTotals().items()]
     if totals['failedShows']:
@@ -782,13 +1005,13 @@ settingTypes = {
     'show-progressbar': int, 'hide-skipped': int, 'timeout': int, 'temp-path': str,
     'retries': int, 'oldest-first': int, 'log-file': str, 'max-speed': int,
     'skip-inactive-days': int, 'random-show': int, 'debug': int, 'parallel': int, 'notify': list, 'notify-when': str,
-    'podcast-folder': str, 'shows': list,
+    'podcast-folder': str, 'filename-format': str, 'shows': list,
 }
 showSettingTypes = {
-    'url': str, 'folder': str, 'title-as-filename': int,
+    'url': str, 'folder': str, 'name': str, 'filename-format': str, 'title-as-filename': int,
     'enabled': int, 'redownload': int, 'max-episodes': int, 'skip-episodes': list,
 }
-requiredShowSettings = ['url', 'folder', 'title-as-filename']
+requiredShowSettings = ['url', 'folder']
 notifyWhenChoices = ['changes', 'failures', 'always']
 
 def checkSettings(settings, types, where, problems):
@@ -824,6 +1047,8 @@ def loadConfig(configPath):
         problems.append('"timeout" must be at least 1')
     if config.get('parallel') == 0:
         problems.append('"parallel" must be at least 1')
+    if isinstance(config.get('filename-format'), str) and config['filename-format'] and checkNameFormat(config['filename-format']):
+        problems.append('"filename-format" {0}'.format(checkNameFormat(config['filename-format'])))
     if isinstance(config.get('notify-when'), str) and config['notify-when'] not in notifyWhenChoices:
         problems.append('"notify-when" should be one of: {0}'.format(', '.join(notifyWhenChoices)))
     if isinstance(config.get('notify'), list):
@@ -852,6 +1077,8 @@ def loadConfig(configPath):
                 problems.append('"folder" {0} needs "podcast-folder" at the top of config.json, the folder all shows go in'.format(where))
             else:
                 show['download-path'] = os.path.join(config['podcast-folder'], show['folder'])
+        if isinstance(show.get('filename-format'), str) and show['filename-format'] and checkNameFormat(show['filename-format']):
+            problems.append('"filename-format" {0} {1}'.format(where, checkNameFormat(show['filename-format'])))
         if isinstance(show.get('skip-episodes'), list) and not all(isinstance(entry, str) for entry in show['skip-episodes']):
             problems.append('"skip-episodes" {0} should be a list of episode titles or filenames'.format(where))
     if problems:
@@ -860,7 +1087,7 @@ def loadConfig(configPath):
 
 def applySettings(config):
     # Set the settings for all shows from config.json; anything missing falls back to the default
-    global showProgress, hideSkipped, requestTimeout, partialDir, maxRetries, oldestFirst, logFile, maxSpeed, skipInactiveDays, debug, parallel
+    global showProgress, hideSkipped, requestTimeout, partialDir, maxRetries, oldestFirst, logFile, maxSpeed, skipInactiveDays, debug, parallel, nameFormat
     # "show-progressbar": 1 shows a download bar for each episode. It's left off when output goes
     # to a file or a scheduled task instead of a terminal, where the redrawn bar would garble the output
     showProgress = config.get('show-progressbar', 0) == 1 and sys.stdout.isatty()
@@ -886,6 +1113,9 @@ def applySettings(config):
     parallel = config.get('parallel', 1)
     if parallel > 1:
         showProgress = False
+    # "filename-format": how episodes are named, like "{show} - {date} - {episode} - {title}".
+    # Empty means the episode title, or the URL's filename with "title-as-filename": 0
+    nameFormat = config.get('filename-format', '')
 
 def pickShows(shows, names):
     # The shows --show asks for, matched by folder name, or by part of the folder name or feed URL
@@ -923,6 +1153,7 @@ def main(arguments=None):
     options = parseArguments(sys.argv[1:] if arguments is None else arguments)
     stopEvent.clear()
     planNotes.clear()
+    nameWarnings.clear()
     configPath = options.config
     config = loadConfig(configPath)
     applySettings(config)
@@ -978,6 +1209,10 @@ def main(arguments=None):
     plans = [plan(number, show) for number, show in enumerate(shows, 1)]
     with logLock:
         clearProgress()
+
+    # Say whether the episode names still come out right, before anything downloads
+    for warning in nameWarnings:
+        log(paint('⚠ ', 'yellow') + warning + paint(' · check "filename-format"', 'dim'))
     if config.get('random-show', 0) == 1:
         jobs = list(mixedOrder(plans))
     else:

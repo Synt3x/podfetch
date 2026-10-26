@@ -14,11 +14,11 @@
   "notify": [],
   "notify-when": "changes",
   "podcast-folder": "/podcast",
+  "filename-format": "{show} - {date} - {episode} - {title}",
   "shows": [
     {
       "url": "https://2.5admins.com/feed/podcast/",
       "folder": "2.5admins",
-      "title-as-filename": 1,
       "enabled": 1,
       "max-episodes": 0,
       "skip-episodes": []
