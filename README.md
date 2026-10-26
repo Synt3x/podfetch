@@ -112,7 +112,7 @@ Episodes are saved in `podcast-folder` + each show's `folder`, so the example ab
 ### Settings for each show
 | Field | Type | Description |
 |---|---|---|
-| `url` | string | URL of the podcast RSS feed. The older name `show-url` still works |
+| `url` | string or list | URL of the podcast RSS feed. The older name `show-url` still works. Can be a list of feeds, read as one show with each episode once. That's useful when a feed only lists its latest episodes: add copies of it from [archive.org](https://web.archive.org) to get the older ones too, for example `"http://web.archive.org/web/20190607030207id_/https://ubuntupodcast.org/feed/podcast/"` (the `id_` after the date gives the feed exactly as it was) |
 | `folder` | string | The show's folder inside `podcast-folder`. It's also how `--show` finds the show |
 | `name` | string | Optional. The show's name in filenames and messages, for example `"Linux Unplugged"` for a feed titled "LINUX Unplugged". Default: the feed's title |
 | `filename-format` | string | Optional. A `filename-format` for this show only |

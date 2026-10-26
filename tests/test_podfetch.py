@@ -631,6 +631,26 @@ class RunTests(PodfetchTestCase):
         self.run_main(self.config())
         self.assertEqual(self.episodeFiles(), ['Ep 1 Older.mp3', 'Ep 2 Newer.mp3'], 'without it, a deleted episode comes back')
 
+    def test_several_feeds_make_one_show(self):
+        archived = makeFeed([
+            ('Ep 1: Older', 'https://x/1.mp3', 'Thu, 01 Jan 2026 12:00:00 +0000'),
+            ('Ep 0: Oldest', 'https://x/0.mp3', 'Wed, 31 Dec 2025 12:00:00 +0000'),
+        ])
+        feeds = {'https://x/feed': self.feed, 'https://x/archive': archived}
+        def fakeGet(url, **kwargs):
+            return FakeResponse(feeds[url]) if url in feeds else FakeResponse(b'audio')
+        config = self.config()
+        config['shows'][0]['url'] = ['https://x/feed', 'https://x/archive']
+        with mock.patch.object(podfetch.requests, 'get', side_effect=fakeGet):
+            self.quietly(podfetch.main, ['--config', self.writeConfig(config)])
+        self.assertEqual(self.episodeFiles(), ['Ep 0 Oldest.mp3', 'Ep 1 Older.mp3', 'Ep 2 Newer.mp3'])
+        self.assertEqual(podfetch.totals['downloaded'], 3, 'the episode in both feeds downloads once')
+
+    def test_url_list_checked(self):
+        with self.assertRaises(SystemExit) as stop:
+            self.run_main(self.config(url=[]))
+        self.assertIn('list of them', str(stop.exception.code))
+
     def test_dry_run_renames_nothing(self):
         os.makedirs(self.downloadDir)
         open(os.path.join(self.downloadDir, 'Ep 1 Older.mp3'), 'wb').close()

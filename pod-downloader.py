@@ -475,6 +475,33 @@ def fetchFeed(feedUrl):
     # Parse the raw bytes, so the XML declaration decides the text encoding instead of a guess
     return xmlreader.fromstring(feedResponse.content)
 
+def feedUrls(show):
+    # A show's "url" is one feed, or a list of them
+    return show['url'] if isinstance(show['url'], list) else [show['url']]
+
+def fetchFeeds(show):
+    # Read every feed of a show as one. With several, like archived copies of a feed that only ever listed
+    # its latest episodes, the episodes are put together, each once (by its ID), newest first.
+    # The first feed gives the show's title
+    roots = [fetchFeed(url) for url in feedUrls(show)]
+    if len(roots) == 1:
+        return roots[0]
+    channel = roots[0].find('channel')
+    seen = set()
+    items = []
+    for root in roots:
+        for item in root.findall('.//channel/item'):
+            enclosure = item.find('enclosure')
+            key = (item.findtext('guid') or '').strip() or (enclosure.get('url') if enclosure is not None else None) or item.findtext('title')
+            if key not in seen:
+                seen.add(key)
+                items.append(item)
+    for item in channel.findall('item'):
+        channel.remove(item)
+    items.sort(key=lambda item: getReleaseTime(item.findtext('pubDate')) or 0, reverse=True)
+    channel.extend(items)
+    return roots[0]
+
 def buildEpisodes(feedRoot, downloadDir, useTitle, nameFormat='', showLabel=''):
     # Work out each episode's filename. Returns a list of episodes, oldest first.
     # With a "filename-format", names come from it; "legacyFilename" is always the older title or URL name,
@@ -596,7 +623,7 @@ def disableShowInConfig(show):
         before = json.loads(text)
 
         # The show's { ... } block is the one holding its feed URL; show blocks have no { } inside them
-        quotedUrl = json.dumps(show['url'], ensure_ascii=False)
+        quotedUrl = json.dumps(feedUrls(show)[0], ensure_ascii=False)
         position = text.find(quotedUrl)
         if position < 0 or text.find(quotedUrl, position + 1) >= 0:
             return False
@@ -633,7 +660,7 @@ def planPodcast(show, redownload, checkInactive=True):
     # Work out which of a show's episodes need downloading. Returns them in download order;
     # a dry run lists them and returns nothing, since nothing will be downloaded
     downloadDir = show['download-path']
-    feedRoot = fetchFeed(show['url'])
+    feedRoot = fetchFeeds(show)
     feedTitle = ' '.join((feedRoot.findtext('channel/title') or '').split())
     # "name" on a show replaces the feed's title, in filenames and messages
     label = show.get('name') or feedTitle
@@ -834,7 +861,7 @@ def looseName(filename):
 def checkShow(show, listLimit=20):
     # Report how a show's folder compares with its feed, without changing anything
     downloadDir = show['download-path']
-    feedRoot = fetchFeed(show['url'])
+    feedRoot = fetchFeeds(show)
     episodes = selectEpisodes(buildEpisodes(feedRoot, downloadDir, show.get('title-as-filename', 1), show.get('filename-format', nameFormat), show.get('name', '')),
                               show.get('skip-episodes', []), show.get('max-episodes', 0))
     # The record of episode IDs isn't an episode
@@ -1021,7 +1048,7 @@ settingTypes = {
     'podcast-folder': str, 'filename-format': str, 'skip-deleted': int, 'shows': list,
 }
 showSettingTypes = {
-    'url': str, 'folder': str, 'name': str, 'filename-format': str, 'title-as-filename': int,
+    'url': (str, list), 'folder': str, 'name': str, 'filename-format': str, 'title-as-filename': int,
     'enabled': int, 'redownload': int, 'max-episodes': int, 'skip-episodes': list,
 }
 requiredShowSettings = ['url', 'folder']
@@ -1033,7 +1060,7 @@ def checkSettings(settings, types, where, problems):
         if key not in types:
             print('Warning: unknown setting "{0}" {1} is ignored. Check the spelling'.format(key, where))
         elif not isinstance(value, types[key]) or (types[key] is int and isinstance(value, bool)):
-            problems.append('"{0}" {1} should be {2}'.format(key, where, 'a number' if types[key] is int else 'text' if types[key] is str else 'a list'))
+            problems.append('"{0}" {1} should be {2}'.format(key, where, 'a number' if types[key] is int else 'text' if types[key] is str else 'a list' if types[key] is list else 'text or a list'))
         elif types[key] is int and value < 0:
             problems.append('"{0}" {1} can\'t be negative'.format(key, where))
 
@@ -1090,6 +1117,8 @@ def loadConfig(configPath):
                 problems.append('"folder" {0} needs "podcast-folder" at the top of config.json, the folder all shows go in'.format(where))
             else:
                 show['download-path'] = os.path.join(config['podcast-folder'], show['folder'])
+        if isinstance(show.get('url'), list) and (not show['url'] or not all(isinstance(url, str) for url in show['url'])):
+            problems.append('"url" {0} should be a feed URL, or a list of them'.format(where))
         if isinstance(show.get('filename-format'), str) and show['filename-format'] and checkNameFormat(show['filename-format']):
             problems.append('"filename-format" {0} {1}'.format(where, checkNameFormat(show['filename-format'])))
         if isinstance(show.get('skip-episodes'), list) and not all(isinstance(entry, str) for entry in show['skip-episodes']):
@@ -1141,7 +1170,7 @@ def pickShows(shows, names):
         name = name.lower()
         matches = [show for show in shows if showName(show).lower() == name]
         if not matches:
-            matches = [show for show in shows if name in showName(show).lower() or name in show['url'].lower()]
+            matches = [show for show in shows if name in showName(show).lower() or any(name in url.lower() for url in feedUrls(show))]
         if not matches:
             sys.exit('No show matches "{0}". Shows in config.json: {1}'.format(name, ', '.join(showName(show) for show in shows)))
         picked += [show for show in matches if show not in picked]
@@ -1214,7 +1243,7 @@ def main(arguments=None):
             redownload = options.redownload or show.get('redownload', 0) == 1
             return planPodcast(show, redownload, checkInactive=not options.show)
         except Exception as e:
-            log('Failed to process {0}: {1}'.format(show['url'], e))
+            log('Failed to process {0}: {1}'.format(showName(show), e))
             totals['failedShows'] += 1
             return []
 
