@@ -1,5 +1,3 @@
-> **Note:** This project is no longer maintained and is provided as-is.
-
 # Pod Downloader
 A simple Python script that downloads podcast episodes from RSS feeds based on a JSON configuration file.
 
