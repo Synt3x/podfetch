@@ -454,7 +454,26 @@ class RunTests(PodfetchTestCase):
         lines = output.getvalue().splitlines()
         self.assertEqual(lines[-2:], ['✔ 2 of 2 downloaded · 0.0 MB', '  └─ Test  2 ep  0.0 MB'],
                          'the show is named by its feed title, "Test"')
-        self.assertTrue(any(line.startswith('Downloading [episodes] Ep 2 Newer.mp3') for line in lines))
+        self.assertIn('[1/2, 1 left] Downloading [Test] Ep 2 Newer.mp3', lines)
+        self.assertIn('[2/2, 0 left] Downloading [Test] Ep 1 Older.mp3', lines)
+        self.assertFalse(any('https://x/' in line for line in lines), 'download URLs only appear with debug')
+
+    def test_debug_shows_where_episodes_come_from(self):
+        output = self.run_text(json.dumps({**self.config(), 'debug': 1}))
+        self.assertIn('  [debug] Reading feed https://x/feed', output)
+        self.assertIn('  [debug] From https://x/2.mp3', output)
+        self.assertIn('  [debug] Saving to ' + os.path.join(self.downloadDir, 'Ep 2 Newer.mp3'), output)
+
+    def test_debug_flag(self):
+        shutil.rmtree(self.downloadDir, ignore_errors=True)
+        self.assertIn('[debug] From https://x/1.mp3', self.run_text(json.dumps(self.config()), '--debug'))
+
+    def test_debug_never_shows_notification_urls(self):
+        config = {**self.config(), 'debug': 1, 'notify': [{'type': 'discord', 'url': 'https://discord.test/api/webhooks/1/secret'}]}
+        with mock.patch.object(podfetch.requests, 'post', return_value=FakeResponse(status=204)):
+            output = self.run_text(json.dumps(config))
+        self.assertIn('[debug] Sent discord notification: HTTP 204', output)
+        self.assertNotIn('secret', output)
 
     def test_skip_episodes(self):
         self.run_main(self.config(**{'skip-episodes': ['Ep 1: Older']}))

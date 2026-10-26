@@ -55,6 +55,7 @@ oldestFirst = False
 logFile = None
 maxSpeed = 0
 skipInactiveDays = 0
+debug = False
 dryRun = False
 
 # The config.json in use, so a finished inactive show can be disabled in it
@@ -110,6 +111,11 @@ def log(message):
                 f.write('{0}  {1}\n'.format(time.strftime('%Y-%m-%d %H:%M:%S'), message))
         except OSError as e:
             print('Could not write to log file {0}: {1}'.format(logFile, e))
+
+def debugLog(message):
+    # Details only shown with "debug": 1 or --debug, like where each episode is downloaded from
+    if debug:
+        log('  [debug] ' + message)
 
 def printProgress(done, total):
     # Redraw the bar on the same line; without a known size, show MB downloaded only
@@ -195,6 +201,7 @@ def getReleaseTime(pubDate):
 
 def fetchFeed(feedUrl):
     # Fetch the RSS feed
+    debugLog('Reading feed {0}'.format(feedUrl))
     feedResponse = requests.get(feedUrl, timeout=requestTimeout)
     feedResponse.raise_for_status()
 
@@ -386,11 +393,14 @@ def planPodcast(show, redownload, checkInactive=True):
                 log('File {0} has already been downloaded'.format(filename))
     return planned
 
-def downloadPlanned(job):
-    # Download one episode from planPodcast and count the result
+def downloadPlanned(job, number, total):
+    # Download one episode from planPodcast and count the result. number and total give the
+    # "[12/604, 592 left]" counter, so you can see how far along the run is
     episode = job['episode']
     filename = episode['filename']
-    log('Downloading [{0}] {1} from url {2}'.format(job['show'], filename, episode['url']))
+    log('[{0}/{1}, {2} left] Downloading [{3}] {4}'.format(number, total, total - number, displayName(job['show']), filename))
+    debugLog('From {0}'.format(episode['url']))
+    debugLog('Saving to {0}'.format(job['filepath']))
     if downloadEpisode(episode['url'], filename, job['filepath'], episode['releaseTime']):
         totals['downloaded'] += 1
         downloadedNames.append((job['show'], filename, os.path.getsize(job['filepath'])))
@@ -571,6 +581,8 @@ def sendNotifications(notify, notifyWhen):
         headers = {'Authorization': 'Bot ' + target['token']} if target.get('token') else {}
         try:
             response = requests.post(target['url'], json=notifyPayload(serviceType, message), headers=headers, timeout=requestTimeout)
+            # The URL can hold the webhook's secret, so it isn't shown, even in debug output
+            debugLog('Sent {0} notification: HTTP {1}'.format(serviceType, response.status_code))
             if not response.ok:
                 log('Could not send {0} notification: HTTP {1}'.format(serviceType, response.status_code))
         except requests.RequestException as e:
@@ -580,7 +592,7 @@ def sendNotifications(notify, notifyWhen):
 settingTypes = {
     'show-progressbar': int, 'hide-skipped': int, 'timeout': int, 'temp-path': str,
     'retries': int, 'oldest-first': int, 'log-file': str, 'max-speed': int,
-    'skip-inactive-days': int, 'random-show': int, 'notify': list, 'notify-when': str,
+    'skip-inactive-days': int, 'random-show': int, 'debug': int, 'notify': list, 'notify-when': str,
     'podcast-folder': str, 'shows': list,
 }
 showSettingTypes = {
@@ -658,7 +670,7 @@ def loadConfig(configPath):
 
 def applySettings(config):
     # Set the settings for all shows from config.json; anything missing falls back to the default
-    global showProgress, hideSkipped, requestTimeout, partialDir, maxRetries, oldestFirst, logFile, maxSpeed, skipInactiveDays
+    global showProgress, hideSkipped, requestTimeout, partialDir, maxRetries, oldestFirst, logFile, maxSpeed, skipInactiveDays, debug
     # "show-progressbar": 1 shows a download bar for each episode. It's left off when output goes
     # to a file or a scheduled task instead of a terminal, where the redrawn bar would garble the output
     showProgress = config.get('show-progressbar', 0) == 1 and sys.stdout.isatty()
@@ -678,6 +690,8 @@ def applySettings(config):
     maxSpeed = config.get('max-speed', 0)
     # "skip-inactive-days": skip a show whose newest episode is older than this many days; 0 means never
     skipInactiveDays = config.get('skip-inactive-days', 0)
+    # "debug": 1 shows extra details, like the feed URLs and where each episode is downloaded from
+    debug = config.get('debug', 0) == 1
 
 def pickShows(shows, names):
     # The shows --show asks for, matched by folder name, or by part of the folder name or feed URL
@@ -697,6 +711,7 @@ def pickShows(shows, names):
 def parseArguments(arguments):
     parser = argparse.ArgumentParser(description='Download podcast episodes from the RSS feeds in config.json.')
     parser.add_argument('--redownload', action='store_true', help='download every episode again, overwriting existing files')
+    parser.add_argument('--debug', action='store_true', help='show extra details, like where each episode is downloaded from')
     parser.add_argument('--dry-run', action='store_true', help='list what would be downloaded, without downloading or changing anything')
     parser.add_argument('--check', action='store_true', help='compare each folder with its feed: missing, misnamed, duplicate and extra files')
     parser.add_argument('--show', action='append', metavar='NAME', help='only this show, by folder name or part of it; can be used more than once')
@@ -716,6 +731,9 @@ def main(arguments=None):
     config = loadConfig(configPath)
     applySettings(config)
     dryRun = options.dry_run
+    if options.debug:
+        global debug
+        debug = True
 
     # A dry run or check only reports, so it doesn't add to the log file
     if options.dry_run or options.check:
@@ -747,15 +765,16 @@ def main(arguments=None):
             totals['failedShows'] += 1
             return []
 
-    # "random-show": 1 reads every feed first, then mixes the shows' downloads in random order;
-    # otherwise each show is finished before the next one starts
+    # Read every feed first, so the total is known and each download can show how many are left.
+    # "random-show": 1 mixes the shows' downloads in random order; otherwise each show is finished
+    # before the next one starts
+    plans = [plan(show) for show in shows]
     if config.get('random-show', 0) == 1:
-        for job in mixedOrder([plan(show) for show in shows]):
-            downloadPlanned(job)
+        jobs = list(mixedOrder(plans))
     else:
-        for show in shows:
-            for job in plan(show):
-                downloadPlanned(job)
+        jobs = [job for planned in plans for job in planned]
+    for number, job in enumerate(jobs, 1):
+        downloadPlanned(job, number, len(jobs))
 
     for line in summaryLines():
         log(line)

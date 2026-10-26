@@ -8,6 +8,7 @@
   "random-show": 0,
   "max-speed": 0,
   "skip-inactive-days": 0,
+  "debug": 0,
   "log-file": "",
   "notify": [],
   "notify-when": "changes",
