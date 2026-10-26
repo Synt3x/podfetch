@@ -22,7 +22,7 @@ It reads every feed first, then downloads, counting as it goes so you can see ho
 [12/604, 592 left] Downloading [2.5 Admins] 2.5 Admins 323 Something.mp3
 ```
 
-Stop it any time with Ctrl+C; the next run carries on where it stopped. Each run ends with a summary of what's new, by show, using each feed's own title:
+Stop it any time with Ctrl+C. Downloads in progress stop straight away, and the next run carries on where it stopped. Each run ends with a summary of what's new, by show, using each feed's own title:
 
 ```
 ✔ 10 of 10 downloaded · 30.0 MB
@@ -89,7 +89,8 @@ Episodes are saved in `podcast-folder` + each show's `folder`, so the example ab
 | `retries` | integer | How many more times to try a download that timed out, dropped or got a server error (5xx), waiting 5 seconds between tries. Default `0` |
 | `oldest-first` | integer | `1` = download each show in release order instead of newest first. Default `0` |
 | `random-show` | integer | `1` = read every feed first, then take each next download from a random show, so one site doesn't get all the requests in a row. Each show's episodes keep their order. Default `0` = finish one show before starting the next |
-| `max-speed` | integer | Download speed limit in KB/s, for example `5000` for about 5 MB/s. Default `0` = no limit |
+| `parallel` | integer | How many episodes download at the same time. `2` or `3` is faster while staying gentle on the sites; more mostly hits the same few servers harder. Above `1`, the progress bar is replaced by a `✔` line as each episode finishes. Default `1` |
+| `max-speed` | integer | Download speed limit in KB/s for each download, for example `5000` for about 5 MB/s. With `parallel`, the total can be that many times higher. Default `0` = no limit |
 | `skip-inactive-days` | integer | Disable a show whose newest episode is older than this many days, as it has probably ended. `90` is about three months. The script first checks that you have every episode: if any are missing it downloads them, and only once the show is complete does it set `"enabled": 0` on it in `config.json`, so later runs don't check it again. Set it back to `1` to re-enable the show. `--show` still runs it, and `--dry-run` only says what it would disable. Default `0` = never disable |
 | `debug` | integer | `1` = show extra details: each feed URL as it's read, where each episode is downloaded from and saved to, and how each notification was answered. Notification URLs are never shown, as they can hold secrets. Default `0` |
 | `log-file` | string | Also write every message, with the time, to this file. A relative path is next to the script. Empty or missing = no log file |

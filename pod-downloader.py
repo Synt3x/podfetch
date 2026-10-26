@@ -2,8 +2,11 @@ import requests
 import os
 import re
 import argparse
+import concurrent.futures
 import email.utils
+import hashlib
 import json
+import threading
 import mimetypes
 import random
 import shutil
@@ -56,7 +59,15 @@ logFile = None
 maxSpeed = 0
 skipInactiveDays = 0
 debug = False
+parallel = 1
 dryRun = False
+
+# With "parallel" above 1, several downloads update the counts and write messages at once
+countLock = threading.Lock()
+logLock = threading.Lock()
+
+# Set on Ctrl+C, so downloads in progress stop straight away
+stopEvent = threading.Event()
 
 # The config.json in use, so a finished inactive show can be disabled in it
 configPath = os.path.join(scriptDir, 'config.json')
@@ -103,14 +114,16 @@ def cleanName(name, maxLength):
     return name
 
 def log(message):
-    # Print a message, and also add it to the log file with the time when one is set
-    print(message)
-    if logFile:
-        try:
-            with open(logFile, 'a', encoding='utf-8') as f:
-                f.write('{0}  {1}\n'.format(time.strftime('%Y-%m-%d %H:%M:%S'), message))
-        except OSError as e:
-            print('Could not write to log file {0}: {1}'.format(logFile, e))
+    # Print a message, and also add it to the log file with the time when one is set.
+    # The lock keeps lines from parallel downloads from mixing
+    with logLock:
+        print(message, flush=True)
+        if logFile:
+            try:
+                with open(logFile, 'a', encoding='utf-8') as f:
+                    f.write('{0}  {1}\n'.format(time.strftime('%Y-%m-%d %H:%M:%S'), message))
+            except OSError as e:
+                print('Could not write to log file {0}: {1}'.format(logFile, e))
 
 def debugLog(message):
     # Details only shown with "debug": 1 or --debug, like where each episode is downloaded from
@@ -133,11 +146,13 @@ def throttleDelay(done, elapsed, bytesPerSecond):
     return max(0.0, done / bytesPerSecond - elapsed)
 
 def downloadEpisode(episodeUrl, filename, filepath, releaseTime):
-    # Returns True once the episode is saved, False if it failed
+    # Returns True once the episode is saved, False if it failed, None if stopped with Ctrl+C
 
-    # Save to a .part file first, then move it into place once complete
+    # Save to a .part file first, then move it into place once complete. The .part name comes from the
+    # full destination path, so two shows with the same episode filename can download at the same time.
+    # It's shorter than the filename, so it fits wherever the filename does
     os.makedirs(partialDir, exist_ok=True)
-    partialPath = os.path.join(partialDir, filename + '.part')
+    partialPath = os.path.join(partialDir, hashlib.sha1(os.path.abspath(filepath).encode('utf-8')).hexdigest()[:16] + '.part')
 
     # Smaller chunks when the speed is limited, so the pauses between them stay short
     chunkSize = 64 * 1024 if maxSpeed else 1024 * 1024
@@ -146,7 +161,10 @@ def downloadEpisode(episodeUrl, filename, filepath, releaseTime):
     for attempt in range(maxRetries + 1):
         if attempt > 0:
             log('  Retrying ({0}/{1}) in {2}s'.format(attempt, maxRetries, retryDelay))
-            time.sleep(retryDelay)
+            if stopEvent.wait(retryDelay):
+                return None
+        if stopEvent.is_set():
+            return None
         try:
             # Stream to disk in chunks instead of holding the whole episode in memory
             with requests.get(episodeUrl, allow_redirects=True, stream=True, timeout=requestTimeout) as episodeResponse:
@@ -162,6 +180,9 @@ def downloadEpisode(episodeUrl, filename, filepath, releaseTime):
                 started = time.monotonic()
                 with open(partialPath, 'wb') as f:
                     for chunk in episodeResponse.iter_content(chunk_size=chunkSize):
+                        # Ctrl+C: stop now, leaving the .part file; the next run downloads the episode again
+                        if stopEvent.is_set():
+                            return None
                         f.write(chunk)
                         done += len(chunk)
                         if showProgress:
@@ -401,12 +422,55 @@ def downloadPlanned(job, number, total):
     log('[{0}/{1}, {2} left] Downloading [{3}] {4}'.format(number, total, total - number, displayName(job['show']), filename))
     debugLog('From {0}'.format(episode['url']))
     debugLog('Saving to {0}'.format(job['filepath']))
-    if downloadEpisode(episode['url'], filename, job['filepath'], episode['releaseTime']):
-        totals['downloaded'] += 1
-        downloadedNames.append((job['show'], filename, os.path.getsize(job['filepath'])))
-    else:
-        totals['failed'] += 1
-        failedNames.append((job['show'], filename))
+    try:
+        result = downloadEpisode(episode['url'], filename, job['filepath'], episode['releaseTime'])
+    except Exception as e:
+        # Anything unexpected fails this one episode, not the whole run
+        log('Failed to download {0}: {1}'.format(filename, e))
+        result = False
+
+    # Stopped with Ctrl+C: neither downloaded nor failed
+    if result is None:
+        return
+    with countLock:
+        if result:
+            size = os.path.getsize(job['filepath'])
+            totals['downloaded'] += 1
+            downloadedNames.append((job['show'], filename, size))
+        else:
+            totals['failed'] += 1
+            failedNames.append((job['show'], filename))
+
+    # Without a progress bar, say when each parallel download finishes
+    if result and parallel > 1:
+        log('  ✔ [{0}] {1} ({2})'.format(displayName(job['show']), filename, formatSize(size)))
+
+def runDownloads(jobs):
+    # Download the planned episodes, "parallel" at a time. Ctrl+C stops every download in progress
+    # straight away; returns False when stopped that way
+    total = len(jobs)
+    try:
+        if parallel <= 1:
+            for number, job in enumerate(jobs, 1):
+                downloadPlanned(job, number, total)
+        else:
+            pool = concurrent.futures.ThreadPoolExecutor(max_workers=parallel)
+            pending = set()
+            try:
+                pending = {pool.submit(downloadPlanned, job, number, total) for number, job in enumerate(jobs, 1)}
+                # Wait in short steps; Windows ignores Ctrl+C during a wait without a time limit
+                while pending:
+                    finished, pending = concurrent.futures.wait(pending, timeout=0.5)
+            finally:
+                # Leaving early (Ctrl+C): tell the downloads in progress to stop, and start no more
+                if pending:
+                    stopEvent.set()
+                pool.shutdown(wait=True, cancel_futures=True)
+    except KeyboardInterrupt:
+        stopEvent.set()
+        log('Stopped. Run again to carry on where it stopped')
+        return False
+    return True
 
 def mixedOrder(queues, pick=random.choice):
     # Interleave the shows' download lists: each next download comes from a random show that
@@ -592,7 +656,7 @@ def sendNotifications(notify, notifyWhen):
 settingTypes = {
     'show-progressbar': int, 'hide-skipped': int, 'timeout': int, 'temp-path': str,
     'retries': int, 'oldest-first': int, 'log-file': str, 'max-speed': int,
-    'skip-inactive-days': int, 'random-show': int, 'debug': int, 'notify': list, 'notify-when': str,
+    'skip-inactive-days': int, 'random-show': int, 'debug': int, 'parallel': int, 'notify': list, 'notify-when': str,
     'podcast-folder': str, 'shows': list,
 }
 showSettingTypes = {
@@ -633,6 +697,8 @@ def loadConfig(configPath):
     checkSettings(config, settingTypes, 'at the top of config.json', problems)
     if config.get('timeout') == 0:
         problems.append('"timeout" must be at least 1')
+    if config.get('parallel') == 0:
+        problems.append('"parallel" must be at least 1')
     if isinstance(config.get('notify-when'), str) and config['notify-when'] not in notifyWhenChoices:
         problems.append('"notify-when" should be one of: {0}'.format(', '.join(notifyWhenChoices)))
     if isinstance(config.get('notify'), list):
@@ -670,7 +736,7 @@ def loadConfig(configPath):
 
 def applySettings(config):
     # Set the settings for all shows from config.json; anything missing falls back to the default
-    global showProgress, hideSkipped, requestTimeout, partialDir, maxRetries, oldestFirst, logFile, maxSpeed, skipInactiveDays, debug
+    global showProgress, hideSkipped, requestTimeout, partialDir, maxRetries, oldestFirst, logFile, maxSpeed, skipInactiveDays, debug, parallel
     # "show-progressbar": 1 shows a download bar for each episode. It's left off when output goes
     # to a file or a scheduled task instead of a terminal, where the redrawn bar would garble the output
     showProgress = config.get('show-progressbar', 0) == 1 and sys.stdout.isatty()
@@ -692,6 +758,11 @@ def applySettings(config):
     skipInactiveDays = config.get('skip-inactive-days', 0)
     # "debug": 1 shows extra details, like the feed URLs and where each episode is downloaded from
     debug = config.get('debug', 0) == 1
+    # "parallel": how many episodes download at the same time. Several progress bars can't share
+    # one line, so the bar is left off when it's above 1
+    parallel = config.get('parallel', 1)
+    if parallel > 1:
+        showProgress = False
 
 def pickShows(shows, names):
     # The shows --show asks for, matched by folder name, or by part of the folder name or feed URL
@@ -727,6 +798,7 @@ def main(arguments=None):
         sys.stdout.reconfigure(errors='replace')
 
     options = parseArguments(sys.argv[1:] if arguments is None else arguments)
+    stopEvent.clear()
     configPath = options.config
     config = loadConfig(configPath)
     applySettings(config)
@@ -773,11 +845,14 @@ def main(arguments=None):
         jobs = list(mixedOrder(plans))
     else:
         jobs = [job for planned in plans for job in planned]
-    for number, job in enumerate(jobs, 1):
-        downloadPlanned(job, number, len(jobs))
+    completed = runDownloads(jobs)
 
     for line in summaryLines():
         log(line)
+
+    # Stopped with Ctrl+C: no notification, and exit code 130 as for any interrupted program
+    if not completed:
+        return 130
 
     # "notify": tell Discord, Slack or Voidy how the run went
     if config.get('notify') and not dryRun:

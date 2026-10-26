@@ -342,6 +342,7 @@ class ConfigTests(PodfetchTestCase):
         error = self.configError({'notify': [{'type': 'teams', 'url': 'x'}], 'notify-when': 'sometimes',
                                   'shows': [{'url': 'x', 'download-path': 'y', 'title-as-filename': 1, 'skip-episodes': [1]}]})
         self.assertIn('notify entry 1 needs a "type"', error)
+        self.assertIn('"parallel" must be at least 1', self.configError({'parallel': 0, 'shows': []}))
         self.assertIn('"notify-when" should be one of', error)
         self.assertIn('"skip-episodes" in show 1', error)
 
@@ -457,6 +458,55 @@ class RunTests(PodfetchTestCase):
         self.assertIn('[1/2, 1 left] Downloading [Test] Ep 2 Newer.mp3', lines)
         self.assertIn('[2/2, 0 left] Downloading [Test] Ep 1 Older.mp3', lines)
         self.assertFalse(any('https://x/' in line for line in lines), 'download URLs only appear with debug')
+
+    def test_parallel_downloads_everything(self):
+        output = self.run_text(json.dumps({**self.config(), 'parallel': 2}))
+        self.assertEqual(sorted(os.listdir(self.downloadDir)), ['Ep 1 Older.mp3', 'Ep 2 Newer.mp3'])
+        self.assertEqual(os.listdir(os.path.join(self.tempDir, 'parts')), [], 'no .part files left behind')
+        self.assertIn('  ✔ [Test] Ep 2 Newer.mp3 (0.0 MB)', output)
+        self.assertIn('✔ 2 of 2 downloaded · 0.0 MB', output)
+
+    def test_parallel_same_filename_in_two_shows(self):
+        # Two shows each with an "Episode 1": downloaded at the same time, each must get its own file
+        otherDir = os.path.join(self.tempDir, 'other')
+        feeds = {'https://x/a': makeFeed([('Episode 1', 'https://x/a1.mp3', None)]),
+                 'https://x/b': makeFeed([('Episode 1', 'https://x/b1.mp3', None)])}
+        def get(url, **kwargs):
+            if url in feeds:
+                return FakeResponse(feeds[url])
+            time.sleep(0.05)
+            return FakeResponse(b'ID3 audio for ' + url.encode() + b' ' * 300000)
+        config = {'temp-path': os.path.join(self.tempDir, 'parts'), 'parallel': 2, 'shows': [
+            {'url': 'https://x/a', 'download-path': self.downloadDir, 'title-as-filename': 1},
+            {'url': 'https://x/b', 'download-path': otherDir, 'title-as-filename': 1}]}
+        path = self.writeConfigText(json.dumps(config))
+        with mock.patch.object(podfetch.requests, 'get', side_effect=get):
+            self.assertEqual(self.quietly(podfetch.main, ['--config', path]), 0)
+        with open(os.path.join(self.downloadDir, 'Episode 1.mp3'), 'rb') as f:
+            self.assertTrue(f.read().startswith(b'ID3 audio for https://x/a1.mp3'))
+        with open(os.path.join(otherDir, 'Episode 1.mp3'), 'rb') as f:
+            self.assertTrue(f.read().startswith(b'ID3 audio for https://x/b1.mp3'))
+
+    def test_stop_leaves_no_file_and_counts_nothing(self):
+        podfetch.stopEvent.set()
+        try:
+            filepath = os.path.join(self.tempDir, 'Ep.mp3')
+            with mock.patch.object(podfetch.requests, 'get', side_effect=self.fakeGet):
+                self.assertIsNone(podfetch.downloadEpisode('https://x/1.mp3', 'Ep.mp3', filepath, None))
+                self.quietly(podfetch.downloadPlanned, {'show': 'episodes', 'filepath': filepath,
+                             'episode': {'filename': 'Ep.mp3', 'url': 'https://x/1.mp3', 'releaseTime': None}}, 1, 1)
+            self.assertFalse(os.path.exists(filepath))
+            self.assertEqual((podfetch.totals['downloaded'], podfetch.totals['failed']), (0, 0))
+        finally:
+            podfetch.stopEvent.clear()
+
+    def test_parallel_turns_off_the_progress_bar(self):
+        with mock.patch.object(podfetch.sys.stdout, 'isatty', return_value=True):
+            podfetch.applySettings({'show-progressbar': 1})
+            self.assertTrue(podfetch.showProgress)
+            podfetch.applySettings({'show-progressbar': 1, 'parallel': 2})
+            self.assertFalse(podfetch.showProgress)
+        podfetch.applySettings({})
 
     def test_debug_shows_where_episodes_come_from(self):
         output = self.run_text(json.dumps({**self.config(), 'debug': 1}))
