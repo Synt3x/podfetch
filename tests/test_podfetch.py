@@ -320,7 +320,7 @@ class ConfigTests(PodfetchTestCase):
 
     def test_folder_joins_the_top_level_download_path(self):
         config = self.quietly(podfetch.loadConfig, self.writeConfig({
-            'download-path': 'Z:/', 'shows': [
+            'podcast-folder': 'Z:/', 'shows': [
                 {'url': 'https://x/a', 'folder': '2.5admins', 'title-as-filename': 1},
                 {'url': 'https://x/b', 'folder': 'ignored', 'download-path': 'D:/elsewhere', 'title-as-filename': 1},
             ]}))
@@ -331,8 +331,16 @@ class ConfigTests(PodfetchTestCase):
     def test_folder_needs_a_download_path(self):
         error = self.configError({'shows': [{'url': 'x', 'folder': 'a', 'title-as-filename': 1},
                                             {'url': 'x', 'title-as-filename': 1}]})
-        self.assertIn('"folder" in show 1 needs "download-path" at the top', error)
+        self.assertIn('"folder" in show 1 needs "podcast-folder" at the top', error)
         self.assertIn('"folder" is missing in show 2', error)
+
+    def test_old_top_level_download_path_name_still_works(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            config = podfetch.loadConfig(self.writeConfig({'download-path': 'Z:/', 'shows': [
+                {'url': 'https://x/feed', 'folder': 'a', 'title-as-filename': 1}]}))
+        self.assertEqual(config['shows'][0]['download-path'], os.path.join('Z:/', 'a'))
+        self.assertNotIn('unknown setting', output.getvalue())
 
     def test_old_show_url_name_still_works(self):
         output = io.StringIO()

@@ -48,7 +48,7 @@ Options can be combined, for example `python pod-downloader.py --show 2.5admins 
     { "type": "discord", "url": "https://discord.com/api/webhooks/..." }
   ],
   "notify-when": "changes",
-  "download-path": "/podcast",
+  "podcast-folder": "/podcast",
   "shows": [
     {
       "url": "https://2.5admins.com/feed/podcast/",
@@ -62,7 +62,7 @@ Options can be combined, for example `python pod-downloader.py --show 2.5admins 
 }
 ```
 
-Episodes are saved in `download-path` + each show's `folder`, so the example above saves 2.5 Admins episodes in `/podcast/2.5admins`. Only `shows`, and in each show `url`, `folder` and `title-as-filename`, are required. Anything else that's missing uses its default. A misspelled setting name gets a warning, and other mistakes in the file get a message saying what to fix.
+Episodes are saved in `podcast-folder` + each show's `folder`, so the example above saves 2.5 Admins episodes in `/podcast/2.5admins`. Only `shows`, and in each show `url`, `folder` and `title-as-filename`, are required. Anything else that's missing uses its default. A misspelled setting name gets a warning, and other mistakes in the file get a message saying what to fix.
 
 ### Settings for all shows
 | Field | Type | Description |
@@ -79,14 +79,14 @@ Episodes are saved in `download-path` + each show's `folder`, so the example abo
 | `log-file` | string | Also write every message, with the time, to this file. A relative path is next to the script. Empty or missing = no log file |
 | `notify` | list | Where to send a message after a run. See [Notifications](#notifications) |
 | `notify-when` | string | `changes` = when anything downloaded or failed, `failures` = only when something failed, `always` = after every run. Default `changes` |
-| `download-path` | string | The folder all shows go in. Each show is saved in its `folder` inside it |
+| `podcast-folder` | string | The folder all shows go in. Each show is saved in its `folder` inside it. The older name `download-path` still works here |
 
 ### Settings for each show
 | Field | Type | Description |
 |---|---|---|
 | `url` | string | URL of the podcast RSS feed. The older name `show-url` still works |
-| `folder` | string | The show's folder inside the top-level `download-path`. It's also the show's name in messages and for `--show` |
-| `download-path` | string | Optional. A full folder path for this show only, used instead of `download-path` + `folder`, for example to keep one show on another drive |
+| `folder` | string | The show's folder inside `podcast-folder`. It's also the show's name in messages and for `--show` |
+| `download-path` | string | Optional. A full folder path for this show only, used instead of `podcast-folder` + `folder`, for example to keep one show on another drive |
 | `title-as-filename` | integer | `1` = name files after the episode title, `0` = use the original filename from the URL |
 | `enabled` | integer | Optional. `0` = skip this show without removing it from the config. Default `1` |
 | `max-episodes` | integer | Optional. Only download the newest this many episodes. Default `0` = all |

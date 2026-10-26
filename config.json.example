@@ -11,7 +11,7 @@
   "log-file": "",
   "notify": [],
   "notify-when": "changes",
-  "download-path": "/podcast",
+  "podcast-folder": "/podcast",
   "shows": [
     {
       "url": "https://2.5admins.com/feed/podcast/",
