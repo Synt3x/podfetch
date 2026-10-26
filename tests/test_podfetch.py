@@ -66,6 +66,7 @@ class PodfetchTestCase(unittest.TestCase):
         podfetch.downloadedNames.clear()
         podfetch.failedNames.clear()
         podfetch.wouldDownload.clear()
+        podfetch.showTitles.clear()
 
     def tearDown(self):
         shutil.rmtree(self.tempDir, ignore_errors=True)
@@ -258,21 +259,30 @@ class NotifyTests(PodfetchTestCase):
         self.assertRegex(message, r'\.\.\. and \d+ more$')
         self.assertTrue(message.startswith('podfetch: 500 new episodes (19.5 GB)'), 'the total covers every episode, not just the listed ones')
 
-    def test_summary_by_show(self):
-        podfetch.downloadedNames.extend([('2.5admins', '2.5 Admins 323 A.mp3', 30 * 1024 ** 2), ('linux unplugged', '691 B.mp3', 50 * 1024 ** 2),
-                                         ('2.5admins', '2.5 Admins 324 C.mp3', 20 * 1024 ** 2)])
-        podfetch.failedNames.append(('linux unplugged', '692 D.mp3'))
-        podfetch.failedNames.append(('coder raido', '660 E.mp3'))
-        self.assertEqual(podfetch.summaryByShow(), [
-            '  2.5admins: 2 episodes (50.0 MB)',
-            '    2.5 Admins 323 A (30.0 MB)',
-            '    2.5 Admins 324 C (20.0 MB)',
-            '  linux unplugged: 1 episode (50.0 MB), 1 failed',
-            '    691 B (50.0 MB)',
-            '    692 D (failed)',
-            '  coder raido: 0 episodes (0.0 MB), 1 failed',
-            '    660 E (failed)',
+    def test_summary_all_downloaded(self):
+        podfetch.showTitles.update({'2.5admins': '2.5 Admins', 'coder raido': 'Coder Radio'})
+        podfetch.totals['downloaded'] = 10
+        podfetch.downloadedNames.extend(('2.5admins', 'ep{0}.mp3'.format(n), 3 * 1024 ** 2) for n in range(9))
+        podfetch.downloadedNames.append(('coder raido', '660.mp3', 3 * 1024 ** 2))
+        self.assertEqual(podfetch.summaryLines(), [
+            '✔ 10 of 10 downloaded · 30.0 MB',
+            '  ├─ 2.5 Admins   9 ep  27.0 MB',
+            '  └─ Coder Radio  1 ep   3.0 MB',
         ])
+
+    def test_summary_with_failures(self):
+        podfetch.showTitles.update({'2.5admins': '2.5 Admins'})
+        podfetch.totals.update(downloaded=1, failed=2, failedShows=1)
+        podfetch.downloadedNames.append(('2.5admins', 'a.mp3', 30 * 1024 ** 2))
+        podfetch.failedNames.extend([('2.5admins', 'b.mp3'), ('coder raido', 'c.mp3')])
+        self.assertEqual(podfetch.summaryLines(), [
+            '⚠ 1 of 3 downloaded · 30.0 MB · 2 failed · 1 show could not be read',
+            '  ├─ 2.5 Admins   1 ep  30.0 MB  ✖ 1 failed',
+            '  └─ coder raido  0 ep   0.0 MB  ✖ 1 failed',
+        ])
+
+    def test_summary_nothing_new(self):
+        self.assertEqual(podfetch.summaryLines(), ['✔ Nothing new'])
 
     def test_format_size(self):
         self.assertEqual(podfetch.formatSize(0), '0.0 MB')
@@ -432,7 +442,7 @@ class RunTests(PodfetchTestCase):
         self.assertEqual(self.run_main(self.config(), '--dry-run'), 0)
         self.assertFalse(os.path.exists(self.downloadDir))
         self.assertEqual(podfetch.totals['downloaded'], 2)
-        self.assertEqual(podfetch.summaryByShow(), ['  episodes: 2 episodes'])
+        self.assertEqual(podfetch.summaryLines(), ['◌ Dry run: would download 2', '  └─ Test  2 ep'])
 
     def test_summary_lists_shows_below_the_totals(self):
         path = os.path.join(self.tempDir, 'config.json')
@@ -442,9 +452,8 @@ class RunTests(PodfetchTestCase):
         with mock.patch.object(podfetch.requests, 'get', side_effect=self.fakeGet), redirect_stdout(output):
             podfetch.main(['--config', path])
         lines = output.getvalue().splitlines()
-        self.assertTrue(lines[-4].startswith('Done: 2 downloaded'))
-        self.assertRegex(lines[-3], r'^  episodes: 2 episodes \(0\.0 MB\)$')
-        self.assertEqual([line.split(' (')[0] for line in lines[-2:]], ['    Ep 2 Newer', '    Ep 1 Older'])
+        self.assertEqual(lines[-2:], ['✔ 2 of 2 downloaded · 0.0 MB', '  └─ Test  2 ep  0.0 MB'],
+                         'the show is named by its feed title, "Test"')
         self.assertTrue(any(line.startswith('Downloading [episodes] Ep 2 Newer.mp3') for line in lines))
 
     def test_skip_episodes(self):

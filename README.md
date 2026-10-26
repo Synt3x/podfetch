@@ -16,16 +16,15 @@ A Python script that downloads podcast episodes from RSS feeds into one folder p
    python pod-downloader.py
    ```
 
-Stop it any time with Ctrl+C; the next run carries on where it stopped. Each run ends with a summary, followed by each show that got new episodes and the episodes themselves, so you can see what's new:
+Stop it any time with Ctrl+C; the next run carries on where it stopped. Each run ends with a summary of what's new, by show, using each feed's own title:
 
 ```
-Done: 3 downloaded (142.5 MB), 0 failed, 1935 already downloaded
-  2.5admins: 2 episodes (85.0 MB)
-    2.5 Admins 323 Something (42.5 MB)
-    2.5 Admins 324 Other (42.5 MB)
-  linux unplugged: 1 episode (57.5 MB)
-    691 Some Title (57.5 MB)
+✔ 10 of 10 downloaded · 30.0 MB
+  ├─ 2.5 Admins   9 ep  27.0 MB
+  └─ Coder Radio  1 ep   3.0 MB
 ```
+
+`✔` means everything worked. `⚠` means something failed, and the shows with failures are marked `✖`.
 
 ## Commands
 | Command | What it does |

@@ -63,6 +63,9 @@ downloadedNames = []
 failedNames = []
 wouldDownload = {}
 
+# Each show's title from its feed, like "2.5 Admins", by folder name; used in the summary and notifications
+showTitles = {}
+
 def getExtension(urlFilename, enclosureType):
     # Prefer the extension in the URL; otherwise go by the file type the feed declares
     if '.' in urlFilename:
@@ -265,8 +268,12 @@ def selectEpisodes(episodes, skipEpisodes, maxEpisodes):
     return kept
 
 def showName(show):
-    # The show's folder name, used in messages, notifications and --show
+    # The show's folder name, used in messages and --show
     return os.path.basename(os.path.normpath(show['download-path']))
+
+def displayName(name):
+    # The feed's title for a show, like "2.5 Admins"; the folder name until its feed has been read
+    return showTitles.get(name, name)
 
 def isInactive(episodes, days, now=None):
     # True when the show's newest episode is more than this many days old, so it has probably ended.
@@ -281,6 +288,9 @@ def planPodcast(show, redownload, checkInactive=True):
     # a dry run lists them and returns nothing, since nothing will be downloaded
     downloadDir = show['download-path']
     feedRoot = fetchFeed(show['url'])
+    feedTitle = ' '.join((feedRoot.findtext('channel/title') or '').split())
+    if feedTitle:
+        showTitles[showName(show)] = feedTitle
     allEpisodes = buildEpisodes(feedRoot, downloadDir, show['title-as-filename'])
 
     # "skip-inactive-days": skip shows with no new episode in that many days, unless picked with --show
@@ -415,25 +425,46 @@ def downloadedSize():
     # Total size of the episodes downloaded this run
     return sum(size for show, filename, size in downloadedNames)
 
-def summaryByShow():
-    # Each show that downloaded or failed anything, in the order they came up, with its new episodes
-    # listed below it, so you can see what's new. A dry run gives just the count for each show
+def summaryLines():
+    # The end-of-run summary: the totals, then a line per show that got anything, in the order they came up:
+    #   ✔ 10 of 10 downloaded · 30.0 MB
+    #     ├─ 2.5 Admins    9 ep   27.0 MB
+    #     └─ Coder Radio   1 ep    3.0 MB
+    # ✔ means everything worked, ⚠ that something failed
+    hadFailure = totals['failed'] or totals['failedShows']
+    rows = []
     if dryRun:
-        return ['  {0}: {1} episode{2}'.format(show, count, '' if count == 1 else 's') for show, count in wouldDownload.items()]
-    shows = {}
-    for show, filename, size in downloadedNames:
-        shows.setdefault(show, {'downloaded': [], 'failed': []})['downloaded'].append((filename, size))
-    for show, filename in failedNames:
-        shows.setdefault(show, {'downloaded': [], 'failed': []})['failed'].append(filename)
-    lines = []
-    for show, episodes in shows.items():
-        count = len(episodes['downloaded'])
-        line = '  {0}: {1} episode{2} ({3})'.format(show, count, '' if count == 1 else 's', formatSize(sum(size for filename, size in episodes['downloaded'])))
-        if episodes['failed']:
-            line += ', {0} failed'.format(len(episodes['failed']))
-        lines.append(line)
-        lines += ['    {0} ({1})'.format(filename.rsplit('.',1)[0], formatSize(size)) for filename, size in episodes['downloaded']]
-        lines += ['    {0} (failed)'.format(filename.rsplit('.',1)[0]) for filename in episodes['failed']]
+        heading = '◌ Dry run: would download {0}'.format(totals['downloaded'])
+        rows = [(displayName(show), '{0} ep'.format(count), '', '') for show, count in wouldDownload.items()]
+    else:
+        attempted = totals['downloaded'] + totals['failed']
+        mark = '⚠' if hadFailure else '✔'
+        if attempted:
+            heading = '{0} {1} of {2} downloaded · {3}'.format(mark, totals['downloaded'], attempted, formatSize(downloadedSize()))
+        else:
+            heading = '{0} Nothing new'.format(mark)
+        if totals['failed']:
+            heading += ' · {0} failed'.format(totals['failed'])
+        shows = {}
+        for show, filename, size in downloadedNames:
+            counts = shows.setdefault(show, [0, 0, 0])
+            counts[0] += 1
+            counts[1] += size
+        for show, filename in failedNames:
+            shows.setdefault(show, [0, 0, 0])[2] += 1
+        rows = [(displayName(show), '{0} ep'.format(downloaded), formatSize(size), '✖ {0} failed'.format(failed) if failed else '')
+                for show, (downloaded, size, failed) in shows.items()]
+    if totals['failedShows']:
+        heading += ' · {0} show{1} could not be read'.format(totals['failedShows'], '' if totals['failedShows'] == 1 else 's')
+
+    # Line the columns up: names on the left, counts and sizes on the right
+    lines = [heading]
+    if rows:
+        widths = [max(len(row[column]) for row in rows) for column in range(3)]
+        for number, (name, count, size, failed) in enumerate(rows):
+            branch = '└─' if number == len(rows) - 1 else '├─'
+            line = '  {0} {1}  {2}  {3}  {4}'.format(branch, name.ljust(widths[0]), count.rjust(widths[1]), size.rjust(widths[2]), failed)
+            lines.append(line.rstrip())
     return lines
 
 def buildNotifyMessage(limit):
@@ -447,10 +478,10 @@ def buildNotifyMessage(limit):
         heading += ', {0} show(s) could not be read'.format(totals['failedShows'])
 
     lines = [heading]
-    lines += ['• {0}: {1} ({2})'.format(show, filename.rsplit('.',1)[0], formatSize(size)) for show, filename, size in downloadedNames]
+    lines += ['• {0}: {1} ({2})'.format(displayName(show), filename.rsplit('.',1)[0], formatSize(size)) for show, filename, size in downloadedNames]
     if failedNames:
         lines.append('Failed:')
-        lines += ['• {0}: {1}'.format(show, filename.rsplit('.',1)[0]) for show, filename in failedNames]
+        lines += ['• {0}: {1}'.format(displayName(show), filename.rsplit('.',1)[0]) for show, filename in failedNames]
 
     # Add lines until the next one wouldn't fit, then say how many were left out
     message = lines[0]
@@ -617,6 +648,12 @@ def parseArguments(arguments):
 
 def main(arguments=None):
     global dryRun, logFile
+
+    # When output goes to a file or scheduled task, Windows may not be able to show characters like ✔ or
+    # some in episode titles; replace those instead of stopping with an error
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(errors='replace')
+
     options = parseArguments(sys.argv[1:] if arguments is None else arguments)
     config = loadConfig(options.config)
     applySettings(config)
@@ -662,17 +699,7 @@ def main(arguments=None):
             for job in plan(show):
                 downloadPlanned(job)
 
-    if dryRun:
-        summary = 'Dry run: would download {0}, {1} already downloaded'.format(totals['downloaded'], totals['skipped'])
-    else:
-        summary = 'Done: {0} downloaded ({1}), {2} failed, {3} already downloaded'.format(
-            totals['downloaded'], formatSize(downloadedSize()), totals['failed'], totals['skipped'])
-    if totals['failedShows']:
-        summary += ', {0} show(s) could not be read'.format(totals['failedShows'])
-    log(summary)
-
-    # Which shows the episodes came from, below the summary
-    for line in summaryByShow():
+    for line in summaryLines():
         log(line)
 
     # "notify": tell Discord, Slack or Voidy how the run went
