@@ -61,6 +61,7 @@ dryRun = False
 totals = {'downloaded': 0, 'failed': 0, 'skipped': 0, 'failedShows': 0}
 downloadedNames = []
 failedNames = []
+wouldDownload = {}
 
 def getExtension(urlFilename, enclosureType):
     # Prefer the extension in the URL; otherwise go by the file type the feed declares
@@ -307,8 +308,9 @@ def planPodcast(show, redownload, checkInactive=True):
         # Download if missing, or again if redownload is on (overwrites the existing file)
         if redownload or not os.path.isfile(filepath):
             if dryRun:
-                log('Would download {0}'.format(filename))
+                log('Would download [{0}] {1}'.format(showName(show), filename))
                 totals['downloaded'] += 1
+                wouldDownload[showName(show)] = wouldDownload.get(showName(show), 0) + 1
                 continue
             planned.append({'show': showName(show), 'episode': episode, 'filepath': filepath})
         else:
@@ -321,7 +323,7 @@ def downloadPlanned(job):
     # Download one episode from planPodcast and count the result
     episode = job['episode']
     filename = episode['filename']
-    log('Downloading {0} from url {1}'.format(filename, episode['url']))
+    log('Downloading [{0}] {1} from url {2}'.format(job['show'], filename, episode['url']))
     if downloadEpisode(episode['url'], filename, job['filepath'], episode['releaseTime']):
         totals['downloaded'] += 1
         downloadedNames.append((job['show'], filename, os.path.getsize(job['filepath'])))
@@ -412,6 +414,27 @@ def formatSize(size):
 def downloadedSize():
     # Total size of the episodes downloaded this run
     return sum(size for show, filename, size in downloadedNames)
+
+def summaryByShow():
+    # Each show that downloaded or failed anything, in the order they came up, with its new episodes
+    # listed below it, so you can see what's new. A dry run gives just the count for each show
+    if dryRun:
+        return ['  {0}: {1} episode{2}'.format(show, count, '' if count == 1 else 's') for show, count in wouldDownload.items()]
+    shows = {}
+    for show, filename, size in downloadedNames:
+        shows.setdefault(show, {'downloaded': [], 'failed': []})['downloaded'].append((filename, size))
+    for show, filename in failedNames:
+        shows.setdefault(show, {'downloaded': [], 'failed': []})['failed'].append(filename)
+    lines = []
+    for show, episodes in shows.items():
+        count = len(episodes['downloaded'])
+        line = '  {0}: {1} episode{2} ({3})'.format(show, count, '' if count == 1 else 's', formatSize(sum(size for filename, size in episodes['downloaded'])))
+        if episodes['failed']:
+            line += ', {0} failed'.format(len(episodes['failed']))
+        lines.append(line)
+        lines += ['    {0} ({1})'.format(filename.rsplit('.',1)[0], formatSize(size)) for filename, size in episodes['downloaded']]
+        lines += ['    {0} (failed)'.format(filename.rsplit('.',1)[0]) for filename in episodes['failed']]
+    return lines
 
 def buildNotifyMessage(limit):
     # A short report of the run, cut to fit the service's message limit
@@ -647,6 +670,10 @@ def main(arguments=None):
     if totals['failedShows']:
         summary += ', {0} show(s) could not be read'.format(totals['failedShows'])
     log(summary)
+
+    # Which shows the episodes came from, below the summary
+    for line in summaryByShow():
+        log(line)
 
     # "notify": tell Discord, Slack or Voidy how the run went
     if config.get('notify') and not dryRun:
