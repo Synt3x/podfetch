@@ -14,7 +14,7 @@ pip install requests
 ```
 
 ## Configuration
-Create a `download.json` file in the same directory as the script. The file should follow this structure:
+Copy `config.json.example` to `config.json` and edit it to list the shows you want. The file should follow this structure:
 
 ```json
 {

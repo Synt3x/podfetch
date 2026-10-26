@@ -1,0 +1,9 @@
+{
+  "shows": [
+    {
+      "show-url": "https://2.5admins.com/feed/podcast/",
+      "download-path": "/podcast/2.5admins",
+      "title-as-filename": 1
+    }
+  ]
+}
