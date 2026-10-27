@@ -25,6 +25,6 @@ A single-file Python podcast downloader: `pod-downloader.py` reads RSS feeds lis
 ## The owner's setup
 - Library: `Z:\` (`\\stormwind\audio\podcasts`, a Samba share), one folder per show. It keeps created dates set by `setFileDates`.
 - `filename-format` is `{show} - {date} - {episode} - {title}`, for example `2.5 Admins - 2026-10-22 - 322 - Internet Defrigeration.mp3`.
-- Ubuntu Podcast has ended; its `url` is a list: archive.org copies of the old feed plus `feeds/ubuntu-podcast-archive.xml`, built from the official archive.org uploads (`ubuntu-podcast-season-01` … `-08`) with dates from the old blog's post URLs. S07E00 has no known date; S06E30 never existed.
+- Ubuntu Podcast has ended; its `url` is a list of local files: `feeds/ubuntu-podcast-feed-<timestamp>.xml`, saved archive.org copies of the old feed (ubuntupodcast.org's feed now redirects to Linux Matters), plus `feeds/ubuntu-podcast-archive.xml`, built from the official archive.org uploads (`ubuntu-podcast-season-01` … `-08`) with dates from the old blog's post URLs. S07E00 has no known date; S06E30 never existed.
 - Linux After Dark also reads an archive.org copy of its feed, for episode 0.
 - Ask before deleting anything on `Z:\` or posting test notifications.
